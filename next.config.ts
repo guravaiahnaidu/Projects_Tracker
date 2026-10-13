@@ -4,14 +4,8 @@ const nextConfig: NextConfig = {
   /* config options here */
   cacheComponents: true,
   partialPrefetching: true,
-  turbopack: {
-    rules: {
-      "*.css": {
-        loaders: ["@tailwindcss/turbopack"],
-        as: "*.css",
-      },
-    },
-  },
+  // Hide the bottom-left "N" route indicator in development; build/runtime errors still show.
+  devIndicators: false,
 };
 
 export default nextConfig;
