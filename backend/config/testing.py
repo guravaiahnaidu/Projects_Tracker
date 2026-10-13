@@ -1,0 +1,48 @@
+"""Test helpers: build records with dates relative to today, like the frontend's offsets."""
+
+from datetime import timedelta
+
+from django.utils import timezone
+from rest_framework.test import APITestCase
+
+from members.models import Member
+from projects.models import LEAD_ROLE, Project, ProjectMember
+from tasks.models import Task
+
+API = "/api/v1"
+
+
+def day(offset: int):
+    return timezone.localdate() + timedelta(days=offset)
+
+
+class ApiTestCase(APITestCase):
+    def member(self, name="Test Person", title="Engineer", department="Engineering", load=60):
+        return Member.objects.create(name=name, title=title, department=department, load=load)
+
+    def project(self, lead=None, name="Test Project", start=-10, end=10, progress=0, **extra):
+        lead = lead or self.member(name=f"Lead of {name}")
+        project = Project.objects.create(
+            name=name, lead=lead, start_date=day(start), end_date=day(end), progress=progress, **extra
+        )
+        ProjectMember.objects.create(project=project, member=lead, role=LEAD_ROLE)
+        return project
+
+    def task(self, project=None, owner=None, title="Do it", due=1, state="not-started", note="", **extra):
+        project = project or self.project()
+        owner = owner or project.lead
+        return Task.objects.create(
+            title=title, project=project, owner=owner, due_date=day(due), state=state, note=note, **extra
+        )
+
+    def get(self, path, **params):
+        return self.client.get(f"{API}{path}", params, format="json")
+
+    def post(self, path, data=None):
+        return self.client.post(f"{API}{path}", data or {}, format="json")
+
+    def patch(self, path, data):
+        return self.client.patch(f"{API}{path}", data, format="json")
+
+    def delete(self, path):
+        return self.client.delete(f"{API}{path}")

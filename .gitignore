@@ -39,3 +39,22 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# --- monorepo: frontend/ (root-anchored rules above only match the repo root) ---
+/frontend/node_modules
+/frontend/.next/
+/frontend/out/
+/frontend/build
+/frontend/coverage
+/frontend/next-env.d.ts
+
+# --- monorepo: backend/ (Django, future) ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+/backend/db.sqlite3
+
+# keep the committed env templates (the rule above ignores .env*)
+!.env.example
+!.env.local.example

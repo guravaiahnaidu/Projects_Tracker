@@ -1,0 +1,53 @@
+from activity.models import ActivityLog
+from config.testing import ApiTestCase
+
+
+class ActivityApiTests(ApiTestCase):
+    def test_empty_feed(self):
+        res = self.get("/activity/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual((res.data["results"], res.data["count"]), ([], 0))
+
+    def test_feed_is_newest_first_and_includes_all_events(self):
+        project = self.project()
+        self.post("/members/", {"name": "New Hire", "title": "Dev", "department": "Eng"})
+        self.post("/tasks/", {"title": "T1", "project_id": project.id, "owner_id": project.lead_id,
+                              "due_date": "2030-01-01"})
+        self.patch(f"/projects/{project.id}/", {"progress": 10})
+        texts = [e["description"] for e in self.get("/activity/").data["results"]]
+        self.assertEqual(texts[0], "You updated progress from 0% to 10%")
+        self.assertEqual(texts[1], "You added “T1”")
+        self.assertEqual(texts[2], "You added New Hire (Dev, Eng) to the team")
+        self.assertEqual(len(texts), 3)
+
+    def test_one_event_row_serves_both_feeds(self):
+        project = self.project()
+        self.patch(f"/projects/{project.id}/", {"progress": 10})
+        self.assertEqual(ActivityLog.objects.count(), 1)
+        self.assertEqual(self.get("/activity/").data["count"], 1)
+        self.assertEqual(self.get(f"/projects/{project.id}/history/").data["count"], 1)
+
+    def test_project_history_only_contains_that_project(self):
+        a, b = self.project(name="A"), self.project(name="B")
+        self.patch(f"/projects/{a.id}/", {"progress": 10})
+        self.patch(f"/projects/{b.id}/", {"progress": 20})
+        hist = self.get(f"/projects/{a.id}/history/").data["results"]
+        self.assertEqual([h["description"] for h in hist], ["You updated progress from 0% to 10%"])
+
+    def test_paging(self):
+        for i in range(5):
+            ActivityLog.objects.create(action="x", entity_type="t", description=f"event {i}")
+        page = self.get("/activity/", limit=2, offset=1).data
+        self.assertEqual([e["description"] for e in page["results"]], ["event 3", "event 2"])
+        self.assertEqual((page["count"], page["limit"], page["offset"]), (5, 2, 1))
+        self.assertEqual(self.get("/activity/", limit=0).status_code, 400)
+        self.assertEqual(self.get("/activity/", offset="x").status_code, 400)
+        self.assertEqual(self.get("/activity/", limit=9999).data["limit"], 200)
+
+    def test_events_survive_entity_deletion(self):
+        project = self.project()
+        t = self.task(project=project, title="Temp")
+        self.delete(f"/tasks/{t.id}/")
+        self.assertTrue(
+            ActivityLog.objects.filter(description="You deleted “Temp”", project=project).exists()
+        )
