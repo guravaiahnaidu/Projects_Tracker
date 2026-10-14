@@ -4,7 +4,7 @@ from datetime import date, timedelta
 
 from django.db.models import Q
 
-from config.params import parse_id, parse_month
+from common.params import parse_id, parse_month
 
 from .models import Priority, State, Task
 from .rules import ALL_GROUPS

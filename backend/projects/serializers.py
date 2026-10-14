@@ -1,7 +1,7 @@
 from rest_framework import serializers
 
-from config.limits import PROJECT_DECISION_MAX, PROJECT_DESCRIPTION_MAX
-from config.params import ID_MAX
+from common.limits import PROJECT_DECISION_MAX, PROJECT_DESCRIPTION_MAX
+from common.params import ID_MAX
 from members.models import Member
 from tasks import rules as task_rules
 

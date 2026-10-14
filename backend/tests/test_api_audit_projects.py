@@ -1,8 +1,8 @@
 """Audit probes for the projects endpoints (list/detail/history/tasks/team/objectives) - see audit_support.py."""
 
 from activity.models import ActivityLog
-from config.audit_support import AuditCase
-from config.testing import day
+from tests.audit_support import AuditCase
+from tests.support import day
 from projects.models import Project, ProjectMember, ProjectObjective
 from tasks.models import Task
 

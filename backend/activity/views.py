@@ -1,7 +1,7 @@
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from config.params import OFFSET_MAX, parse_int
+from common.params import OFFSET_MAX, parse_int
 
 from .models import ActivityLog
 

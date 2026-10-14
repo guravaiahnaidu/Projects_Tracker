@@ -5,8 +5,8 @@ Expected figures are worked out by hand from a small controlled data set, not co
 
 from django.utils import timezone
 
-from config.audit_support import AuditCase
-from config.testing import day
+from tests.audit_support import AuditCase
+from tests.support import day
 
 
 class DashboardAudit(AuditCase):

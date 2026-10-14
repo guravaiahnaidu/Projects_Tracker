@@ -1,8 +1,8 @@
 """Audit probes for the members endpoints (see audit_support.py)."""
 
 from activity.models import ActivityLog
-from config.audit_support import AuditCase, json
-from config.testing import API, day
+from tests.audit_support import AuditCase, json
+from tests.support import API, day
 from members.models import Member
 from projects.models import ProjectMember
 from updates.models import DailyUpdate

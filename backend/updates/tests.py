@@ -1,5 +1,5 @@
 from activity.models import ActivityLog
-from config.testing import ApiTestCase, day
+from tests.support import API, ApiTestCase, day
 from updates.models import DailyUpdate, Feedback
 
 
@@ -150,7 +150,7 @@ class DailyUpdateApiTests(ApiTestCase):
     def test_unsupported_methods(self):
         uid = self.create().data["id"]
         self.assertEqual(self.delete("/daily-updates/").status_code, 405)
-        self.assertEqual(self.client.put(f"/daily-updates/{uid}/", {}, format="json").status_code, 405)
+        self.assertEqual(self.client.put(f"{API}/daily-updates/{uid}/", {}, format="json").status_code, 405)
         self.assertEqual(self.get(f"/daily-updates/{uid}/feedback/").status_code, 405)
 
     def test_member_with_updates_cannot_be_deleted(self):

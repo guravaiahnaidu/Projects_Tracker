@@ -1,4 +1,4 @@
-from config.testing import ApiTestCase, day
+from tests.support import ApiTestCase, day
 from dashboard import logic
 from projects.rules import today
 

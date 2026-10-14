@@ -12,8 +12,8 @@ import re
 from django.urls import get_resolver
 from rest_framework.views import APIView
 
-from config.audit_support import RESULTS, AuditCase, key
-from config.testing import API, day
+from tests.audit_support import RESULTS, AuditCase, key
+from tests.support import API, day
 from updates.models import DailyUpdate
 
 METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE")
@@ -31,7 +31,7 @@ def inventory():
             cls = getattr(p.callback, "cls", None)
             route = prefix + str(p.pattern)
             if cls and issubclass(cls, APIView) and not route.startswith("admin/"):
-                tmpl = re.sub(r"<int:(\w+)>", lambda m: "<id>" if m.group(1) == "pk" else f"<{m.group(1)}>", "/" + route)
+                tmpl = re.sub(r"<int:(\w+)>", lambda m: "<id>" if m.group(1) == "pk" else f"<{m.group(1)}>", "/" + route.removeprefix("api/"))  # probes name routes relative to API
                 rows.append((tmpl, cls.__name__, [m.upper() for m in ("get", "post", "put", "patch", "delete") if hasattr(cls, m)]))
 
     walk(get_resolver().url_patterns)
@@ -111,7 +111,7 @@ class GlobalAudit(AuditCase):
 
         def slash():
             get = self.client.get(f"{API}/tasks")
-            self.assertEqual((get.status_code, get["Location"]), (308, "/tasks/"))
+            self.assertEqual((get.status_code, get["Location"]), (308, f"{API}/tasks/"))
             post = self.client.post(f"{API}/tasks", {}, format="json")
             self.assertEqual(post.status_code, 308, "must keep method/body (not 301/302)")
             return "308"

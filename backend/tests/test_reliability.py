@@ -8,7 +8,7 @@ from django.test import override_settings
 from rest_framework.test import APIClient
 from rest_framework.throttling import SimpleRateThrottle
 
-from config.testing import API, ApiTestCase, day
+from tests.support import API, ApiTestCase, day
 from members.models import Member
 from projects.models import Project
 from tasks.models import Task

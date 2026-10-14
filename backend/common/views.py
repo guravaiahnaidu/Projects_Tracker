@@ -9,9 +9,9 @@ class HttpResponsePermanentRedirectKeepMethod(HttpResponseRedirectBase):
 
 
 def server_error(request, *args, **kwargs):
-    """Django's handler500 (used when DEBUG is off): JSON for every URL except the admin site, never a stack trace. The full traceback is
-    logged server-side by Django's django.request logger."""
-    if not request.path.startswith("/admin/"):
+    """Django's handler500 (used when DEBUG is off): JSON for API URLs only, Django's plain HTML 500 page for everything else
+    (admin, browser URLs); never a stack trace. The full traceback is logged server-side by Django's django.request logger."""
+    if request.path.startswith("/api/"):
         return JsonResponse(
             {"error": {"code": "server_error", "message": "Something went wrong on the server.", "fields": {}}}, status=500
         )
@@ -22,11 +22,11 @@ def server_error(request, *args, **kwargs):
 
 @csrf_exempt
 def api_not_found(request, path=""):
-    """Fallback for any URL that matches no endpoint (the API has no HTML pages).
+    """Fallback for any unknown URL under /api/ (mounted only at api/; URLs outside /api/ get Django's standard HTML 404).
 
     - A URL that only lacks its trailing slash is redirected with 308, which (unlike 301/302) keeps the HTTP
       method and body, so a POST to /tasks is not silently turned into a GET.
-    - Everything else gets the standard JSON error envelope instead of Django's HTML 404 page.
+    - Everything else gets the standard JSON error envelope.
     """
     if not request.path.endswith("/"):
         try:

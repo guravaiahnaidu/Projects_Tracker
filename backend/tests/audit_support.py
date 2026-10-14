@@ -10,7 +10,7 @@ import json
 import os
 
 from django.core.cache import cache
-from config.testing import API, ApiTestCase
+from tests.support import API, ApiTestCase
 
 RESULTS: dict = {}  # "METHOD /route/" -> [probe dicts]
 

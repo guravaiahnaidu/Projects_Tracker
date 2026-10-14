@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from config.limits import TASK_NOTE_MAX
+from common.limits import TASK_NOTE_MAX
 from members.models import Member
 from projects.models import Project
 from projects.rules import today as today_fn

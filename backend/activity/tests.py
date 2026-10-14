@@ -1,5 +1,5 @@
 from activity.models import ActivityLog
-from config.testing import ApiTestCase
+from tests.support import ApiTestCase
 
 
 class ActivityApiTests(ApiTestCase):

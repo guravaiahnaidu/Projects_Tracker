@@ -7,7 +7,7 @@ from unittest import mock
 from django.test import override_settings
 from django.utils import timezone
 
-from config.testing import ApiTestCase
+from tests.support import ApiTestCase
 from members.models import Member
 from projects.models import LEAD_ROLE, Project, ProjectMember
 from tasks.models import Task

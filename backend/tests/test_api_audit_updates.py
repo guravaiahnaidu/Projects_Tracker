@@ -1,8 +1,8 @@
 """Audit probes for the daily-updates and feedback endpoints - see audit_support.py."""
 
 from activity.models import ActivityLog
-from config.audit_support import AuditCase
-from config.testing import day
+from tests.audit_support import AuditCase
+from tests.support import day
 from updates.models import DailyUpdate, Feedback
 
 

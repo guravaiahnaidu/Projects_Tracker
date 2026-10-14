@@ -10,7 +10,7 @@ from members.models import Member
 from projects.models import LEAD_ROLE, Project, ProjectMember
 from tasks.models import Task
 
-API = ""  # the API is served from the site root: /members/, /tasks/, ...
+API = "/api"  # every endpoint is under /api/: /api/members/, /api/tasks/, ...
 
 
 def day(offset: int):

@@ -1,7 +1,7 @@
 from datetime import date, timedelta
 
 from activity.models import ActivityLog
-from config.testing import ApiTestCase, day
+from tests.support import ApiTestCase, day
 from tasks import rules
 from tasks.models import Task
 

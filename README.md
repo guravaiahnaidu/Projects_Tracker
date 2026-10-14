@@ -54,7 +54,7 @@ Other commands: `npm run lint`, `npx tsc --noEmit`, `npm test` (Node's built-in 
 
 ## API overview
 
-All endpoints are under `/api/v1/`: `members/`, `projects/` (with `history/`, `tasks/`, `members/`, `objectives/`, `decision/`;
+All endpoints are under `/api/`: `members/`, `projects/` (with `history/`, `tasks/`, `members/`, `objectives/`, `decision/`;
 `?detail=1` on the list), `tasks/` (with `complete/`), `dashboard/*`, `today/`, `weekly-brief/`, `activity/`.
 Errors are JSON: `{"error": {"code", "message", "fields"}}`. A URL that only lacks its trailing slash is redirected with `308`.
 The full endpoint, field and validation reference is in `empty.txt`.

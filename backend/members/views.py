@@ -5,8 +5,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from activity.services import log
-from config.exceptions import Conflict
-from config.params import parse_id
+from common.exceptions import Conflict
+from common.params import parse_id
 from projects.models import Project, ProjectMember
 from projects.rules import today as today_fn
 

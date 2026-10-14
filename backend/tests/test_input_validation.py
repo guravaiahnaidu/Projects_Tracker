@@ -1,7 +1,7 @@
 """Regression tests for the unhandled-exception findings: hostile or malformed input at the URL/body boundary must
 produce a controlled 400/404 in the standard error envelope, never an exception (HTTP 500)."""
 
-from config.testing import ApiTestCase, day
+from tests.support import API, ApiTestCase, day
 
 HUGE = "9" * 25
 VERY_LONG = "9" * 5000  # longer than int() will convert from str
@@ -152,7 +152,7 @@ class PathIdTests(Envelope, ApiTestCase):
         # a JSON array / scalar body is a 400, not an AttributeError
         for raw in ("[]", "[1,2]", '"text"', "7", "null"):
             with self.subTest(raw=raw):
-                res = self.client.post(f"{path[0:]}", data=raw, content_type="application/json")
+                res = self.client.post(f"{API}{path}", data=raw, content_type="application/json")
                 self.assertEqual(res.status_code, 400, raw)
         # unchanged behaviour: missing or unknown id -> 404 "nothing to undo"
         self.assert_envelope(self.post(path, {}), 404)
@@ -171,13 +171,13 @@ class PathIdTests(Envelope, ApiTestCase):
         for method, path in targets:
             for raw in ("[]", '"x"', "5", "null"):
                 with self.subTest(method=method, path=path, raw=raw):
-                    res = getattr(self.client, method)(f"{path}", data=raw, content_type="application/json")
+                    res = getattr(self.client, method)(f"{API}{path}", data=raw, content_type="application/json")
                     self.assertEqual(res.status_code, 400)
 
 
 class TextLengthTests(ApiTestCase):
     def test_description_decision_and_note_limits(self):
-        from config.limits import PROJECT_DECISION_MAX, PROJECT_DESCRIPTION_MAX, TASK_NOTE_MAX
+        from common.limits import PROJECT_DECISION_MAX, PROJECT_DESCRIPTION_MAX, TASK_NOTE_MAX
 
         lead = self.member()
         base = {"name": "P", "lead_id": lead.id, "start_date": day(-1).isoformat(), "end_date": day(9).isoformat()}
@@ -201,22 +201,35 @@ class UnknownRouteAndSlashTests(Envelope, ApiTestCase):
     def test_unknown_api_urls_return_json_envelope(self):
         for method in ("get", "post", "patch", "delete"):
             with self.subTest(method=method):
-                res = getattr(self.client, method)("/does/not/exist/")
+                res = getattr(self.client, method)(f"{API}/does/not/exist/")
                 self.assert_envelope(res, 404)
                 self.assertEqual(res.json()["error"]["code"], "not_found")
                 self.assertTrue(res["Content-Type"].startswith("application/json"))
-        self.assert_envelope(self.client.get("/members/abc/"), 404)
-        self.assert_envelope(self.client.get("/"), 404)
+        self.assert_envelope(self.client.get(f"{API}/members/abc/"), 404)
+        self.assert_envelope(self.client.get(f"{API}/"), 404)
+
+    def test_urls_outside_api_return_django_html_404(self):
+        for path in ("/", "/unknown-path/", "/members/", "/tasks", "/does/not/exist/"):
+            for method in ("get", "post"):
+                with self.subTest(path=path, method=method):
+                    res = getattr(self.client, method)(path)
+                    self.assertEqual(res.status_code, 404)
+                    self.assertTrue(res["Content-Type"].startswith("text/html"))
+                    self.assertNotIn("not_found", res.content.decode())
+
+    def test_admin_still_served(self):
+        res = self.client.get("/admin/")
+        self.assertEqual((res.status_code, res["Location"]), (302, "/admin/login/?next=/admin/"))
 
     def test_missing_trailing_slash_redirects_with_308_keeping_method(self):
-        for method, path in (("get", "/members"), ("post", "/tasks"), ("patch", "/tasks/1"),
-                             ("delete", "/projects/1")):
+        for method, path in (("get", f"{API}/members"), ("post", f"{API}/tasks"), ("patch", f"{API}/tasks/1"),
+                             ("delete", f"{API}/projects/1")):
             with self.subTest(path=path):
                 res = getattr(self.client, method)(path)
                 self.assertEqual(res.status_code, 308)
                 self.assertEqual(res["Location"], path + "/")
-        res = self.client.get("/tasks?status=all&q=x")
-        self.assertEqual((res.status_code, res["Location"]), (308, "/tasks/?status=all&q=x"))
+        res = self.client.get(f"{API}/tasks?status=all&q=x")
+        self.assertEqual((res.status_code, res["Location"]), (308, f"{API}/tasks/?status=all&q=x"))
 
     def test_post_with_trailing_slash_is_unaffected(self):
         project = self.project()
@@ -226,7 +239,7 @@ class UnknownRouteAndSlashTests(Envelope, ApiTestCase):
 
     def test_following_the_308_performs_the_original_post(self):
         project = self.project()
-        res = self.client.post("/tasks", {"title": "via308", "project_id": project.id,
+        res = self.client.post(f"{API}/tasks", {"title": "via308", "project_id": project.id,
                                                   "owner_id": project.lead_id, "due_date": "2030-01-01"},
                                format="json", follow=True)
         self.assertEqual(res.status_code, 201)
@@ -234,7 +247,7 @@ class UnknownRouteAndSlashTests(Envelope, ApiTestCase):
 
     def test_not_found_for_real_endpoints_keeps_the_same_envelope(self):
         self.assert_envelope(self.get("/tasks/999999/"), 404)
-        self.assert_envelope(self.client.put("/tasks/1/", {}, format="json"), 405)
+        self.assert_envelope(self.client.put(f"{API}/tasks/1/", {}, format="json"), 405)
 
 
 class ProjectListDetailOptionTests(ApiTestCase):

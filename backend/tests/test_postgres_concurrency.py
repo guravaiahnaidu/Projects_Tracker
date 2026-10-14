@@ -5,7 +5,7 @@ duplicate-record race cannot be reproduced and a pass would prove nothing. To ru
 
     pip install "psycopg[binary]"
     export DJANGO_DB_ENGINE=postgresql DJANGO_DB_NAME=... DJANGO_DB_USER=... DJANGO_DB_PASSWORD=... DJANGO_DB_HOST=localhost
-    python manage.py test config.test_postgres_concurrency
+    python manage.py test tests.test_postgres_concurrency
 
 (Django creates and drops a separate `test_<name>` database; the real database is not touched.)
 As of the last review these tests had NOT been executed anywhere: no PostgreSQL server or driver was available.
@@ -19,7 +19,7 @@ from django.db import connection, connections
 from django.test import TransactionTestCase
 from rest_framework.test import APIClient
 
-from config.testing import API, day
+from tests.support import API, day
 from members.models import Member
 from projects.models import DecisionRecord, LEAD_ROLE, Project, ProjectMember
 from tasks.models import Task

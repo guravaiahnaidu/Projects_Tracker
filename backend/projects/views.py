@@ -9,9 +9,9 @@ from rest_framework.views import APIView
 from activity.models import ActivityLog
 from activity.services import log
 from activity.views import activity_page
-from config.exceptions import Conflict
-from config.limits import LIST_DEFAULT_LIMIT as DEFAULT_LIMIT, LIST_MAX_LIMIT as MAX_LIMIT
-from config.params import OFFSET_MAX, parse_id, parse_int
+from common.exceptions import Conflict
+from common.limits import LIST_DEFAULT_LIMIT as DEFAULT_LIMIT, LIST_MAX_LIMIT as MAX_LIMIT
+from common.params import OFFSET_MAX, parse_id, parse_int
 from tasks.models import Task
 from tasks.views import fmt_date, list_tasks_response
 

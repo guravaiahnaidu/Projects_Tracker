@@ -91,6 +91,7 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "corsheaders",
     "rest_framework",
+    "common",
     "members",
     "projects",
     "tasks",
@@ -177,8 +178,8 @@ REST_FRAMEWORK = {
     "DEFAULT_RENDERER_CLASSES": ["rest_framework.renderers.JSONRenderer"],
     "DEFAULT_PARSER_CLASSES": ["rest_framework.parsers.JSONParser"],
     "UNAUTHENTICATED_USER": None,
-    "EXCEPTION_HANDLER": "config.exceptions.api_exception_handler",
-    "DEFAULT_THROTTLE_CLASSES": ["config.throttling.WriteRateThrottle", "config.throttling.ReadRateThrottle"],
+    "EXCEPTION_HANDLER": "common.exceptions.api_exception_handler",
+    "DEFAULT_THROTTLE_CLASSES": ["common.throttling.WriteRateThrottle", "common.throttling.ReadRateThrottle"],
     "DEFAULT_THROTTLE_RATES": {
         "write": os.environ.get("DJANGO_THROTTLE_WRITE", "120/min"),
         "read": os.environ.get("DJANGO_THROTTLE_READ", "600/min"),

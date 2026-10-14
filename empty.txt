@@ -990,7 +990,7 @@ C5. BACKEND APPS AND MODULES (5 apps, 6 models)
 | tasks | tasks, urgency groups, DB-side filtering | Task | TaskCreateSerializer, TaskUpdateSerializer, task_payload() | TaskListView, TaskDetailView, TaskCompleteView | 21 |
 | activity | single audit/event log | ActivityLog | activity_row() (plain dict) | ActivityListView | 6 |
 | dashboard | derived summaries, no models | - | plain dicts from dashboard/logic.py | 6 views | 12 |
-Shared: config/exceptions.py (error envelope, Conflict 409), config/testing.py (test helpers). Business logic is in views.py (mutations + logging inside @transaction.atomic), rules.py (projects, tasks) and
+Shared: common/exceptions.py (error envelope, Conflict 409), tests/support.py (test helpers). Business logic is in views.py (mutations + logging inside @transaction.atomic), rules.py (projects, tasks) and
 dashboard/logic.py. All 11 mutating view methods that touch several rows are wrapped in transaction.atomic (members POST/PATCH/DELETE, projects POST/PATCH/DELETE + members/objectives/decision/resolve/undo,
 tasks POST/PATCH/DELETE/complete) [CODE: grep]. Note: the serializers for reads are hand-written dict builders (member_payload, project_payload, task_payload), not DRF output serializers (a deviation from the
 "DRF serializers for serialization" wording; input validation does use DRF serializers).
@@ -1013,7 +1013,7 @@ Unbounded text columns: Project.description, Project.decision, Task.note, Activi
 ------------------------------------------------------------------------------
 C7. COMPLETE API ENDPOINT INVENTORY (24 API routes, 35 method bindings; all under /api/v1/)
 ------------------------------------------------------------------------------
-Route list taken from the live URL resolver (config/urls.py + app urls) [LIVE resolver walk]. Auth required = none for all (REST_FRAMEWORK auth classes [] and AllowAny, [PROBE]).
+NOTE: routes below are shown relative to /api/ (see the final section, "URL routing and folder layout"). Route list taken from the live URL resolver (config/urls.py + app urls) [LIVE resolver walk]. Auth required = none for all (REST_FRAMEWORK auth classes [] and AllowAny, [PROBE]).
 Method not listed => returns 405 (verified for PUT on members/projects/tasks detail [PROBE]). Impl = route+logic exist; Tests = observed status codes from the 71-test suite via a request logger [TEST]
 (happy-path 2xx and error codes seen); Status = my verdict. "Caller" = frontend code that calls it (lib/api.ts function -> component).
 | Method | Endpoint | Module | Purpose | Request fields | Response fields | Frontend caller | Statuses observed in tests | Status |
@@ -1828,3 +1828,40 @@ NOTE ON THIS FILE: before the first Git commit of this work, this file was found
 sections (the original frontend audit and the two earlier update sections were missing from the working copy; the cause was
 not determined). It was rebuilt from the committed original (Git HEAD) plus the missing sections re-added from the session
 record; nothing from the committed original was changed.
+
+
+=====================================================================================================================
+URL ROUTING AND FOLDER LAYOUT (current; supersedes older path/folder mentions above)
+=====================================================================================================================
+Routes (backend/config/urls.py; explicit path()/include(), APIView only, no routers). Every API route ends with "/".
+  /admin/                          Django administration
+  /api/members/                    members/urls.py:    "", departments/, <id>/
+  /api/projects/                   projects/urls.py:   "", <id>/, <id>/history|tasks|members|objectives|decision/, .../members/<member_id>/,
+                                                       .../objectives/<objective_id>/, <id>/decision/resolve|undo/
+  /api/tasks/                      tasks/urls.py:      "", <id>/, <id>/complete/
+  /api/activity/                   activity/urls.py:   ""
+  /api/daily-updates/              updates/urls.py:    "", <id>/, <id>/feedback/
+  /api/dashboard/                  dashboard/urls.py:  summary/, attention/, key-dates/, team-workload/, decisions/
+  /api/decision-history/           single endpoint
+  /api/today/                      single endpoint
+  /api/weekly-brief/               single endpoint
+The old un-prefixed paths (/members/, /tasks/, ...) are NOT kept: no compatibility aliases, no duplicate patterns.
+
+Browser / error behaviour
+  /  and any URL outside /admin/ and /api/   -> Django's standard HTML 404 (no homepage, no catch-all). With DEBUG on this is Django's
+                                                technical 404 page; with DEBUG off the plain "Not Found" page. No traceback in production.
+  /api/<unknown>/                            -> JSON 404 envelope {"error": {"code": "not_found", "message", "fields"}} (catch-all mounted only at api/).
+  /api/<known route without trailing slash>  -> 308 redirect to the slashed URL (keeps method and body).
+  Outside /api/ a missing slash follows Django's APPEND_SLASH (301) only for URLs that exist, which none do; so they 404.
+  Validation/conflict/throttle errors on real endpoints keep the JSON envelope (common/exceptions.py).
+  handler500 (common.views.server_error): JSON envelope for /api/ URLs, Django's plain HTML 500 page elsewhere (admin, browser URLs).
+
+Folder layout (backend/)
+  config/   __init__.py asgi.py settings.py urls.py wsgi.py          (only these)
+  common/   __init__.py apps.py exceptions.py limits.py params.py throttling.py views.py     (shared infrastructure; registered in INSTALLED_APPS)
+  tests/    __init__.py support.py (was config/testing.py) audit_support.py test_*.py        (plain package, no models/migrations)
+  App-level tests (members/tests.py, projects/tests.py, ...) stay in their apps and import tests.support.
+  Run: python manage.py test   (discovers tests/ and the app tests; 190 tests, 5 PostgreSQL-only tests skip on SQLite)
+
+Frontend: lib/api.ts API_BASE_URL defaults to http://127.0.0.1:8000/api; frontend/.env.local.example sets NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000/api.
+  A local frontend/.env.local (git-ignored, not edited here) that still says http://127.0.0.1:8000 must be changed to .../api, otherwise every call 404s.

@@ -6,9 +6,9 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from activity.services import log
-from config.exceptions import Conflict
-from config.limits import LIST_DEFAULT_LIMIT, LIST_MAX_LIMIT
-from config.params import OFFSET_MAX, parse_id, parse_int
+from common.exceptions import Conflict
+from common.limits import LIST_DEFAULT_LIMIT, LIST_MAX_LIMIT
+from common.params import OFFSET_MAX, parse_id, parse_int
 
 from .models import DailyUpdate, Feedback, ReviewStatus
 from .serializers import DailyUpdateEditSerializer, DailyUpdateWriteSerializer, FeedbackSerializer, update_payload
