@@ -45,12 +45,33 @@ export interface Task {
   note?: string;
 }
 
+export type MemberStatus = "active" | "on_leave" | "inactive";
+export type EmploymentType = "full_time" | "part_time" | "contract" | "intern";
+
+export const MEMBER_STATUSES: { value: MemberStatus; label: string }[] = [
+  { value: "active", label: "Active" },
+  { value: "on_leave", label: "On leave" },
+  { value: "inactive", label: "Inactive" },
+];
+
+export const EMPLOYMENT_TYPES: { value: EmploymentType; label: string }[] = [
+  { value: "full_time", label: "Full-time" },
+  { value: "part_time", label: "Part-time" },
+  { value: "contract", label: "Contract" },
+  { value: "intern", label: "Intern" },
+];
+
 export interface Member {
   id?: number; // server id
   name: string;
   title: string; // job title
   role: string; // department
   load: number; // % of capacity allocated
+  email?: string; // "" when not recorded
+  phone?: string;
+  status?: MemberStatus; // absent on dashboard summaries, which only carry the basics
+  employmentType?: EmploymentType;
+  startDate?: string | null; // YYYY-MM-DD
 }
 
 export const projects: Project[] = [];

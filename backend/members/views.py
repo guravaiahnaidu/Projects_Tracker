@@ -15,7 +15,13 @@ from .serializers import MemberWriteSerializer, member_payload, with_stats
 
 
 SHOW_VALUES = ("all", "stretched", "overdue", "blocked")
+OPTIONAL_FIELDS = ("load", "email", "phone", "status", "employment_type", "start_date")
+EDITABLE_FIELDS = ("name", "title", "department", *OPTIONAL_FIELDS)
 SORT_VALUES = ("stretched", "name", "tasks")
+
+
+def _shown(value) -> str:
+    return "(none)" if value in ("", None) else str(value)
 
 
 def get_member(pk, lock=False) -> Member:
@@ -37,6 +43,7 @@ class MemberListView(APIView):
                 Q(name__icontains=q)
                 | Q(title__icontains=q)
                 | Q(department__icontains=q)
+                | Q(email__icontains=q)
                 | Q(memberships__project__name__icontains=q)
             ).distinct()
         if project := params.get("project"):
@@ -74,7 +81,7 @@ class MemberListView(APIView):
             name=data["name"],
             title=data["title"],
             department=data["department"],
-            **({"load": data["load"]} if "load" in data else {}),
+            **{field: data[field] for field in OPTIONAL_FIELDS if field in data},
         )
         log(
             "member.created",
@@ -105,9 +112,10 @@ class MemberDetailView(APIView):
         ser.is_valid(raise_exception=True)
         changes = []
         changed_fields = []
-        for field in ("name", "title", "department", "load"):
+        for field in EDITABLE_FIELDS:
             if field in ser.validated_data and ser.validated_data[field] != getattr(member, field):
-                changes.append(f"{field} {getattr(member, field)} -> {ser.validated_data[field]}")
+                before, after = getattr(member, field), ser.validated_data[field]
+                changes.append(f"{field.replace('_', ' ')} {_shown(before)} -> {_shown(after)}")
                 setattr(member, field, ser.validated_data[field])
                 changed_fields.append(field)
         if changes:

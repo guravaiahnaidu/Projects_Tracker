@@ -99,6 +99,11 @@ export const mapMember = (m: ApiMember): Member => ({
   title: m.title,
   role: m.department,
   load: m.load,
+  email: m.email ?? "",
+  phone: m.phone ?? "",
+  status: m.status ?? "active",
+  employmentType: m.employment_type ?? "full_time",
+  startDate: m.start_date ?? null,
 });
 
 /** Offsets are derived from the absolute dates and the SERVER's today, never taken from the API. */

@@ -127,3 +127,71 @@ class MemberApiTests(ApiTestCase):
             self.assertEqual(res.data["error"]["code"], "validation_error")
         for params in ({"show": "all"}, {"show": "stretched"}, {"show": "overdue"}, {"show": "blocked"}, {"sort": "name"}, {"sort": "tasks"}, {"sort": "stretched"}):
             self.assertEqual(self.get("/members/", **params).status_code, 200, params)
+
+    def test_contact_and_status_defaults(self):
+        res = self.post("/members/", self.valid())
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(
+            (res.data["email"], res.data["phone"], res.data["status"], res.data["employment_type"], res.data["start_date"]),
+            ("", "", "active", "full_time", None),
+        )
+
+    def test_create_with_contact_and_status(self):
+        res = self.post(
+            "/members/",
+            self.valid(
+                email="  Asha.Rao@Example.COM ",
+                phone=" +91  98450 12345 ",
+                status="on_leave",
+                employment_type="contract",
+                start_date="2026-11-02",
+            ),
+        )
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertEqual(res.data["email"], "asha.rao@example.com")
+        self.assertEqual(res.data["phone"], "+91 98450 12345")
+        self.assertEqual(res.data["status"], "on_leave")
+        self.assertEqual(res.data["employment_type"], "contract")
+        self.assertEqual(res.data["start_date"], "2026-11-02")
+
+    def test_invalid_contact_and_choices_rejected(self):
+        cases = {
+            "email": ["not-an-email", "a@b", "x" * 250 + "@ex.com"],
+            "phone": ["12345", "+1 (555) abc-1234", "1" * 16],
+            "status": ["away"],
+            "employment_type": ["freelance"],
+            "start_date": ["14/10/2026"],
+        }
+        for field, values in cases.items():
+            for value in values:
+                res = self.post("/members/", self.valid(**{field: value}))
+                self.assertEqual(res.status_code, 400, (field, value))
+                self.assertIn(field, res.data["error"]["fields"], (field, value))
+        self.assertEqual(Member.objects.count(), 0)
+
+    def test_email_unique_case_insensitive_but_blank_allowed_twice(self):
+        self.assertEqual(self.post("/members/", self.valid(email="asha@example.com")).status_code, 201)
+        res = self.post("/members/", self.valid(name="Other", email="ASHA@example.com"))
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.data["error"]["fields"]["email"], ["asha@example.com is already used by Asha Rao."])
+        self.assertEqual(self.post("/members/", self.valid(name="B1")).status_code, 201)
+        self.assertEqual(self.post("/members/", self.valid(name="B2", email="")).status_code, 201)
+
+    def test_patch_contact_and_status_logs_changes(self):
+        a = self.member(name="Aa")
+        b = self.member(name="Bb")
+        self.patch(f"/members/{b.id}/", {"email": "bb@example.com"})
+        res = self.patch(f"/members/{a.id}/", {"status": "inactive", "email": "aa@example.com"})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual((res.data["status"], res.data["email"]), ("inactive", "aa@example.com"))
+        # Keeping your own email is fine; taking someone else's is not.
+        self.assertEqual(self.patch(f"/members/{a.id}/", {"email": "AA@example.com"}).status_code, 200)
+        self.assertEqual(self.patch(f"/members/{a.id}/", {"email": "bb@example.com"}).status_code, 400)
+        texts = list(ActivityLog.objects.values_list("description", flat=True))
+        self.assertIn("You updated Aa: email (none) -> aa@example.com, status active -> inactive", texts)
+
+    def test_search_matches_email(self):
+        self.post("/members/", self.valid(email="unique.handle@example.com"))
+        self.post("/members/", self.valid(name="Someone Else"))
+        res = self.get("/members/", q="unique.handle")
+        self.assertEqual([r["name"] for r in res.data["results"]], ["Asha Rao"])
