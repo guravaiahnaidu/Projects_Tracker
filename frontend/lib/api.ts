@@ -1,13 +1,9 @@
 // Centralised client for the Django REST backend. Every network call in the UI goes through here.
 // API_BASE_URL includes the backend's /api prefix; paths below are relative to it (e.g. "/members/" -> /api/members/).
 
-<<<<<<< HEAD
-export const API_BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000/api").replace(/\/+$/, "");
-=======
 import type { EmploymentType, MemberStatus } from "./data";
 
-export const API_BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000").replace(/\/+$/, "");
->>>>>>> 5c66126 (edit employee form)
+export const API_BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000/api").replace(/\/+$/, "");
 
 export class ApiError extends Error {
   status: number; // 0 = the server could not be reached
