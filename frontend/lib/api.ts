@@ -1,7 +1,11 @@
 // Centralised client for the Django REST backend. Every network call in the UI goes through here.
 // API_BASE_URL includes the backend's /api prefix; paths below are relative to it (e.g. "/members/" -> /api/members/).
 
+<<<<<<< HEAD
 import type { EmploymentType, MemberStatus } from "./data";
+=======
+import type { EmploymentType, MemberStatus, ProjectPhase, ProjectPriority } from "./data";
+>>>>>>> 168618b (Update frontend and backend functionality)
 
 export const API_BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000/api").replace(/\/+$/, "");
 
@@ -110,9 +114,11 @@ export interface ApiProject {
   id: number;
   name: string;
   department: string;
+  client?: string;
   lead: number;
   lead_name: string;
   phase: string;
+  priority?: string;
   description: string;
   start_date: string;
   end_date: string;
@@ -277,14 +283,19 @@ export interface MemberInput {
 export interface ProjectInput {
   name: string;
   department?: string;
+  client: string;
   lead_id: number;
   start_date: string;
   end_date: string;
+  phase?: ProjectPhase; // omitted: the server derives it from the start date
+  priority?: ProjectPriority;
   description?: string;
 }
 
 export interface ProjectPatch {
   name?: string;
+  client?: string;
+  priority?: ProjectPriority;
   department?: string;
   description?: string;
   phase?: string;
@@ -321,7 +332,8 @@ export const api = {
   listMembers: () => get<Paged<ApiMember>>("/members/"),
   listDepartments: () => get<Paged<string>>("/members/departments/"),
   createMember: (body: MemberInput) => post<ApiMember>("/members/", body),
-  updateMember: (id: number, body: Partial<Omit<MemberInput, "memberships">>) => patch<ApiMember>(`/members/${id}/`, body),
+  /** `memberships`, when sent, is the person's complete project list: missing projects are removed. */
+  updateMember: (id: number, body: Partial<MemberInput>) => patch<ApiMember>(`/members/${id}/`, body),
   deleteMember: (id: number) => del(`/members/${id}/`),
 
   // Projects

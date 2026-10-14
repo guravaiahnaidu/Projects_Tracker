@@ -6,9 +6,12 @@ from members.models import Member
 from tasks import rules as task_rules
 
 from . import rules
-from .models import DEFAULT_DEPARTMENT, DEFAULT_ROLE, DecisionRecord, Outcome, Phase, Project
+from .models import DEFAULT_DEPARTMENT, DEFAULT_ROLE, DecisionRecord, Outcome, Phase, Priority, Project
 
 DEADLINE_MESSAGE = "The deadline must be after the start date."
+CLIENT_MESSAGE = "Enter the client name."
+PHASE_MESSAGE = "Status must be one of: " + ", ".join(Phase.values) + "."
+PRIORITY_MESSAGE = "Priority must be one of: " + ", ".join(Priority.values) + "."
 
 
 def _clean(value: str) -> str:
@@ -20,11 +23,21 @@ class ProjectCreateSerializer(serializers.Serializer):
         max_length=200, error_messages={"blank": "Enter a project name.", "required": "Enter a project name."}
     )
     department = serializers.CharField(max_length=120, required=False, allow_blank=True, default="")
+    client = serializers.CharField(
+        max_length=120, error_messages={"blank": CLIENT_MESSAGE, "required": CLIENT_MESSAGE}
+    )
     lead_id = serializers.PrimaryKeyRelatedField(
         queryset=Member.objects.all(), source="lead", error_messages={"does_not_exist": "Choose a project lead from the team."}
     )
     start_date = serializers.DateField()
     end_date = serializers.DateField()
+    # Omitted phase: derived from the start date (Not Started / In Progress), as before.
+    phase = serializers.ChoiceField(
+        choices=Phase.choices, required=False, error_messages={"invalid_choice": PHASE_MESSAGE}
+    )
+    priority = serializers.ChoiceField(
+        choices=Priority.choices, required=False, default=Priority.MEDIUM, error_messages={"invalid_choice": PRIORITY_MESSAGE}
+    )
     description = serializers.CharField(
         required=False, allow_blank=True, default="", max_length=PROJECT_DESCRIPTION_MAX
     )
@@ -38,6 +51,12 @@ class ProjectCreateSerializer(serializers.Serializer):
     def validate_department(self, value):
         return _clean(value) or DEFAULT_DEPARTMENT
 
+    def validate_client(self, value):
+        value = _clean(value)
+        if not value:
+            raise serializers.ValidationError(CLIENT_MESSAGE)
+        return value
+
     def validate_description(self, value):
         return value.strip()
 
@@ -50,8 +69,12 @@ class ProjectCreateSerializer(serializers.Serializer):
 class ProjectUpdateSerializer(serializers.Serializer):
     name = serializers.CharField(max_length=200, required=False)
     department = serializers.CharField(max_length=120, required=False)
+    client = serializers.CharField(max_length=120, required=False, error_messages={"blank": CLIENT_MESSAGE})
     description = serializers.CharField(required=False, allow_blank=True, max_length=PROJECT_DESCRIPTION_MAX)
-    phase = serializers.ChoiceField(choices=Phase.choices, required=False)
+    phase = serializers.ChoiceField(choices=Phase.choices, required=False, error_messages={"invalid_choice": PHASE_MESSAGE})
+    priority = serializers.ChoiceField(
+        choices=Priority.choices, required=False, error_messages={"invalid_choice": PRIORITY_MESSAGE}
+    )
     lead_id = serializers.PrimaryKeyRelatedField(queryset=Member.objects.all(), source="lead", required=False)
     start_date = serializers.DateField(required=False)
     end_date = serializers.DateField(required=False)
@@ -71,6 +94,12 @@ class ProjectUpdateSerializer(serializers.Serializer):
 
     def validate_department(self, value):
         return _clean(value) or DEFAULT_DEPARTMENT
+
+    def validate_client(self, value):
+        value = _clean(value)
+        if not value:
+            raise serializers.ValidationError(CLIENT_MESSAGE)
+        return value
 
     def validate_description(self, value):
         return value.strip()
@@ -165,9 +194,11 @@ def project_payload(project: Project, on=None, detail: bool = False) -> dict:
         "id": project.id,
         "name": project.name,
         "department": project.department,
+        "client": project.client,
         "lead": project.lead_id,
         "lead_name": project.lead.name,
         "phase": project.phase,
+        "priority": project.priority,
         "description": project.description,
         "start_date": project.start_date.isoformat(),
         "end_date": project.end_date.isoformat(),

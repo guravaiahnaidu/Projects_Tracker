@@ -195,3 +195,41 @@ class MemberApiTests(ApiTestCase):
         self.post("/members/", self.valid(name="Someone Else"))
         res = self.get("/members/", q="unique.handle")
         self.assertEqual([r["name"] for r in res.data["results"]], ["Asha Rao"])
+
+    def test_patch_memberships_adds_rerolls_and_removes_atomically(self):
+        m = self.member(name="Mover")
+        keep, drop, new = self.project(name="Keep"), self.project(name="Drop"), self.project(name="New")
+        self.post(f"/projects/{keep.id}/members/", {"member_id": m.id, "role": "Analyst"})
+        self.post(f"/projects/{drop.id}/members/", {"member_id": m.id})
+        res = self.patch(
+            f"/members/{m.id}/",
+            {"title": "Senior Analyst", "memberships": [{"project_id": keep.id, "role": "Reviewer"}, {"project_id": new.id}]},
+        )
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual(res.data["title"], "Senior Analyst")
+        self.assertEqual(
+            {(p["project_name"], p["role"]) for p in res.data["projects"]}, {("Keep", "Reviewer"), ("New", "Team Member")}
+        )
+        texts = list(ActivityLog.objects.values_list("description", flat=True))
+        self.assertIn("You changed Mover's role from Analyst to Reviewer", texts)
+        self.assertIn("You removed Mover from the team", texts)
+        self.assertIn("You added Mover to the team as Team Member", texts)
+
+    def test_patch_without_memberships_leaves_projects_alone(self):
+        m = self.member(name="Stay")
+        p = self.project(name="P")
+        self.post(f"/projects/{p.id}/members/", {"member_id": m.id})
+        res = self.patch(f"/members/{m.id}/", {"phone": "+1 555 010 0000"})
+        self.assertEqual([x["project_name"] for x in res.data["projects"]], ["P"])
+
+    def test_patch_memberships_cannot_drop_or_rerole_a_led_project(self):
+        project = self.project(name="Led")
+        lead = project.lead
+        for memberships in ([], [{"project_id": project.id, "role": "Team Member"}]):
+            res = self.patch(f"/members/{lead.id}/", {"title": "Changed", "memberships": memberships})
+            self.assertEqual(res.status_code, 400, memberships)
+            self.assertIn("leads", res.data["error"]["fields"]["memberships"][0])
+        lead.refresh_from_db()
+        self.assertNotEqual(lead.title, "Changed")  # the whole edit is rejected, not half-applied
+        ok = self.patch(f"/members/{lead.id}/", {"memberships": [{"project_id": project.id, "role": "Project Lead"}]})
+        self.assertEqual(ok.status_code, 200)

@@ -13,7 +13,7 @@ class ProjectAudit(AuditCase):
         self.other = self.member(name="Other Two")
 
     def body(self, **extra):
-        return {"name": "Fresh", "lead_id": self.lead.id, "start_date": day(-5).isoformat(), "end_date": day(30).isoformat(), **extra}
+        return {"name": "Fresh", "client": "Acme", "lead_id": self.lead.id, "start_date": day(-5).isoformat(), "end_date": day(30).isoformat(), **extra}
 
     def test_projects_list_create_detail(self):
         L, D = "/projects/", "/projects/<id>/"
@@ -50,7 +50,7 @@ class ProjectAudit(AuditCase):
 
         self.probe("POST", L, "valid", "creates, lead membership, activity, persisted", create)
         self.probe("POST", L, "valid", "future start -> Not Started", lambda: self.assertEqual(self.post(L, self.body(name="Later", start_date=day(3).isoformat())).data["phase"], "Not Started") or 201)
-        for field in ("name", "lead_id", "start_date", "end_date"):
+        for field in ("name", "client", "lead_id", "start_date", "end_date"):
             self.bad("POST", L, L, {k: v for k, v in self.body().items() if k != field}, name=f"missing {field}")
         for extra in ({"name": " "}, {"name": "x" * 201}, {"lead_id": 999999}, {"lead_id": "abc"}, {"start_date": "31-12-2026"}, {"end_date": day(-5).isoformat()}, {"end_date": day(-9).isoformat()}, {"description": "d" * 5001}, {"department": "d" * 121}):
             self.bad("POST", L, L, self.body(**extra))

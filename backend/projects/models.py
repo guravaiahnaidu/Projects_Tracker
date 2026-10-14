@@ -5,11 +5,20 @@ from members.models import Member
 
 
 class Phase(models.TextChoices):
+    PLANNING = "Planning", "Planning"
     NOT_STARTED = "Not Started", "Not Started"
     IN_PROGRESS = "In Progress", "In Progress"
     AT_RISK = "At Risk", "At Risk"
     ON_HOLD = "On Hold", "On Hold"
     COMPLETED = "Completed", "Completed"
+    CANCELLED = "Cancelled", "Cancelled"
+
+
+class Priority(models.TextChoices):
+    LOW = "Low", "Low"
+    MEDIUM = "Medium", "Medium"
+    HIGH = "High", "High"
+    CRITICAL = "Critical", "Critical"
 
 
 LEAD_ROLE = "Project Lead"
@@ -20,8 +29,10 @@ DEFAULT_DEPARTMENT = "General"
 class Project(models.Model):
     name = models.CharField(max_length=200)
     department = models.CharField(max_length=120, default=DEFAULT_DEPARTMENT)
+    client = models.CharField(max_length=120, blank=True, default="")  # "" = internal / no client
     lead = models.ForeignKey(Member, on_delete=models.PROTECT, related_name="led_projects")
     phase = models.CharField(max_length=20, choices=Phase.choices, default=Phase.IN_PROGRESS)
+    priority = models.CharField(max_length=10, choices=Priority.choices, default=Priority.MEDIUM)
     description = models.TextField(blank=True, default="")
     start_date = models.DateField()
     end_date = models.DateField()

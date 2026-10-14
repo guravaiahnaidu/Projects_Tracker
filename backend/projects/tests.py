@@ -40,6 +40,7 @@ class ProjectApiTests(ApiTestCase):
     def valid(self, lead, **extra):
         return {
             "name": "New Thing",
+            "client": "Acme",
             "lead_id": lead.id,
             "start_date": day(-5).isoformat(),
             "end_date": day(30).isoformat(),
@@ -56,7 +57,58 @@ class ProjectApiTests(ApiTestCase):
         self.assertEqual(res.data["members"][0]["role"], "Project Lead")
         self.assertEqual(res.data["objectives"], [])
         self.assertEqual(res.data["start_offset"], -5)
-        self.assertTrue(ActivityLog.objects.filter(description="You created New Thing").exists())
+        self.assertTrue(ActivityLog.objects.filter(description="You created New Thing for Acme").exists())
+
+    def test_create_defaults_priority(self):
+        res = self.post("/projects/", self.valid(self.member()))
+        self.assertEqual((res.data["priority"], res.data["client"]), ("Medium", "Acme"))
+
+    def test_client_is_required_and_cannot_be_cleared(self):
+        lead = self.member()
+        for client in (None, "", "   "):
+            body = self.valid(lead)
+            if client is None:
+                del body["client"]
+            else:
+                body["client"] = client
+            res = self.post("/projects/", body)
+            self.assertEqual(res.status_code, 400, client)
+            self.assertEqual(res.data["error"]["fields"]["client"], ["Enter the client name."])
+        project = self.project(name="P", client="Globex")
+        res = self.patch(f"/projects/{project.id}/", {"client": " "})
+        self.assertEqual(res.status_code, 400)
+        project.refresh_from_db()
+        self.assertEqual(project.client, "Globex")
+
+    def test_create_with_status_priority_and_client(self):
+        res = self.post(
+            "/projects/",
+            self.valid(self.member(), phase="Planning", priority="Critical", client="  Acme   Corp ", description=" Scope "),
+        )
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertEqual(
+            (res.data["phase"], res.data["priority"], res.data["client"], res.data["description"]),
+            ("Planning", "Critical", "Acme Corp", "Scope"),
+        )
+        self.assertTrue(ActivityLog.objects.filter(description="You created New Thing for Acme Corp").exists())
+
+    def test_create_rejects_unknown_status_and_priority(self):
+        lead = self.member()
+        for extra, field in (({"phase": "Paused"}, "phase"), ({"priority": "Urgent"}, "priority")):
+            res = self.post("/projects/", self.valid(lead, **extra))
+            self.assertEqual(res.status_code, 400, extra)
+            self.assertIn(field, res.data["error"]["fields"])
+        self.assertEqual(Project.objects.count(), 0)
+
+    def test_patch_priority_client_and_new_phases_are_logged(self):
+        project = self.project(name="P")
+        res = self.patch(f"/projects/{project.id}/", {"priority": "High", "client": "Globex", "phase": "Cancelled"})
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual((res.data["priority"], res.data["client"], res.data["phase"]), ("High", "Globex", "Cancelled"))
+        texts = set(ActivityLog.objects.values_list("description", flat=True))
+        self.assertIn("You changed the priority of P from Medium to High", texts)
+        self.assertIn("You changed the client of P to Globex", texts)
+        self.assertIn("You changed P from In Progress to Cancelled", texts)
 
     def test_future_start_means_not_started(self):
         lead = self.member()

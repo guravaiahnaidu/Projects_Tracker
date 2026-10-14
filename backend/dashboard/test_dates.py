@@ -153,11 +153,11 @@ class MidnightBoundaryTests(ApiTestCase):
 
     def test_project_creation_phase_depends_on_the_server_date(self):
         with frozen(BEFORE_MIDNIGHT):
-            res = self.post("/projects/", {"name": "Starts tomorrow", "lead_id": self.lead.id,
+            res = self.post("/projects/", {"name": "Starts tomorrow", "client": "Acme", "lead_id": self.lead.id,
                                            "start_date": "2026-06-02", "end_date": "2026-07-02"})
         self.assertEqual(res.data["phase"], "Not Started")
         with frozen(AFTER_MIDNIGHT):
-            res = self.post("/projects/", {"name": "Starts today", "lead_id": self.lead.id,
+            res = self.post("/projects/", {"name": "Starts today", "client": "Acme", "lead_id": self.lead.id,
                                            "start_date": "2026-06-02", "end_date": "2026-07-02"})
         self.assertEqual(res.data["phase"], "In Progress")
 

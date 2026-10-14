@@ -46,6 +46,7 @@ import {
   type Priority,
   type Project,
   type ProjectPhase,
+  type ProjectPriority,
   type ProjectStatus,
   type Summary,
   type Task,
@@ -112,8 +113,10 @@ export function mapProject(p: ApiProject, today: string = serverToday()): Projec
     id: String(p.id),
     name: p.name,
     department: p.department,
+    client: p.client ?? "",
     lead: p.lead_name,
     phase: p.phase as ProjectPhase,
+    priority: (p.priority ?? "Medium") as ProjectPriority,
     description: p.description,
     startDate: p.start_date,
     endDate: p.end_date,
@@ -571,6 +574,8 @@ export function ensureLoaded() {
  *  - objective, projectMember: only the project (objectives/members) and its history change.
  *  - newProject: a new project row, its first history entry and the dashboard totals.
  *  - newEmployee: the person, their project memberships, activity, workload figures and department list.
+ *  - employeeEdit: the same groups, for editing or removing a person. A rename refetches everything instead,
+ *    because tasks, daily updates and decisions all show people by name.
  */
 export const SCOPES = {
   task: ["tasks", "projects", "activity", "dashboard"],
@@ -582,6 +587,7 @@ export const SCOPES = {
   projectMember: ["projects", "activity"],
   newProject: ["projects", "activity", "dashboard"],
   newEmployee: ["members", "projects", "activity", "dashboard", "departments"],
+  employeeEdit: ["members", "projects", "activity", "dashboard", "departments"],
 } as const satisfies Record<string, readonly Scope[]>;
 
 /**

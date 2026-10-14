@@ -7,7 +7,7 @@ from rest_framework.views import APIView
 from activity.services import log
 from common.exceptions import Conflict
 from common.params import parse_id
-from projects.models import Project, ProjectMember
+from projects.models import DEFAULT_ROLE, LEAD_ROLE, Project, ProjectMember
 from projects.rules import today as today_fn
 
 from .models import Member
@@ -101,6 +101,63 @@ class MemberListView(APIView):
         return Response(member_payload(get_member(member.pk)), status=201)
 
 
+def _sync_memberships(member: Member, wanted: list) -> None:
+    """Make the member's project list match `wanted` exactly: add, re-role and remove in one step.
+
+    A project the member leads cannot be dropped and keeps its lead role; change the lead on the project first.
+    """
+    current = {m.project_id: m for m in ProjectMember.objects.filter(member=member).select_related("project")}
+    # Partial updates skip serializer defaults, so a missing role is filled in here.
+    wanted_by_project = {item["project"].pk: {**item, "role": item.get("role") or DEFAULT_ROLE} for item in wanted}
+    led = set(Project.objects.filter(lead=member).values_list("pk", flat=True))
+
+    problems = []
+    for project_id in led:
+        item = wanted_by_project.get(project_id)
+        if item is None:
+            problems.append(
+                f"{member.name} leads {current[project_id].project.name if project_id in current else 'a project'}. "
+                "Change the project lead before removing them from it."
+            )
+        elif item["role"] != LEAD_ROLE and project_id in current and current[project_id].role == LEAD_ROLE:
+            problems.append(f"{member.name} leads {item['project'].name}, so their role there stays {LEAD_ROLE}.")
+    if problems:
+        raise ValidationError({"memberships": problems})
+
+    for project_id, membership in current.items():
+        if project_id not in wanted_by_project:
+            membership.delete()
+            log(
+                "membership.removed",
+                "project",
+                project_id,
+                f"You removed {member.name} from the team",
+                project=membership.project,
+            )
+    for project_id, item in wanted_by_project.items():
+        membership = current.get(project_id)
+        if membership is None:
+            ProjectMember.objects.create(project=item["project"], member=member, role=item["role"])
+            log(
+                "membership.added",
+                "project",
+                project_id,
+                f"You added {member.name} to the team as {item['role']}",
+                project=item["project"],
+            )
+        elif membership.role != item["role"]:
+            before = membership.role
+            membership.role = item["role"]
+            membership.save(update_fields=["role"])
+            log(
+                "membership.updated",
+                "project",
+                project_id,
+                f"You changed {member.name}'s role from {before} to {item['role']}",
+                project=item["project"],
+            )
+
+
 class MemberDetailView(APIView):
     def get(self, request, pk):
         return Response(member_payload(get_member(pk)))
@@ -121,6 +178,8 @@ class MemberDetailView(APIView):
         if changes:
             member.save(update_fields=[*changed_fields, "updated_at"])
             log("member.updated", "member", member.id, f"You updated {member.name}: {', '.join(changes)}")
+        if "memberships" in ser.validated_data:
+            _sync_memberships(member, ser.validated_data["memberships"])
         return Response(member_payload(get_member(pk)))
 
     @transaction.atomic

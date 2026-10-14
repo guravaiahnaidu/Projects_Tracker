@@ -7,7 +7,10 @@ export type ProjectStatus = "off-track" | "watch" | "on-track" | "not-started";
 export type TaskState = "not-started" | "in-progress" | "blocked" | "done";
 export type Priority = "High" | "Medium" | "Low";
 
-export type ProjectPhase = "Not Started" | "In Progress" | "At Risk" | "On Hold" | "Completed";
+export type ProjectPhase = "Planning" | "Not Started" | "In Progress" | "At Risk" | "On Hold" | "Completed" | "Cancelled";
+export type ProjectPriority = "Low" | "Medium" | "High" | "Critical";
+
+export const PROJECT_PRIORITIES: ProjectPriority[] = ["Low", "Medium", "High", "Critical"];
 
 export interface ProjectMember {
   name: string;
@@ -19,8 +22,10 @@ export interface Project {
   id: string;
   name: string;
   department: string;
+  client: string; // "" only on projects created before a client was required
   lead: string;
   phase: ProjectPhase; // status set by the project lead
+  priority: ProjectPriority;
   description: string;
   startDate: string; // YYYY-MM-DD
   endDate: string; // YYYY-MM-DD

@@ -75,6 +75,8 @@
 html {
   zoom: var(--ui-scale);
   background: var(--bg);
+  /* Keep scroll targets clear of the pinned header (its height is set by components/Header.tsx). */
+  scroll-padding-top: calc(var(--header-h, 0px) + 12px);
 }
 @media print {
   html {

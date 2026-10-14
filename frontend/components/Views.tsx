@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import {
   departments,
   EMPLOYMENT_TYPES,
@@ -18,7 +18,7 @@ import { api, ApiError, errorMessage } from "@/lib/api";
 import { mutate, numericId, SCOPES, serverToday } from "@/lib/store";
 import type { OpenRef } from "./Overview";
 import { control, dueText, taskGroup } from "./TasksView";
-import { MarkerIcon, Modal } from "./ui";
+import { ConfirmDialog, MarkerIcon, Modal } from "./ui";
 
 export type Show = "all" | "stretched" | "overdue" | "blocked";
 type Sort = "stretched" | "tasks" | "name";
@@ -135,11 +135,13 @@ function PersonCard({
   m,
   info,
   onOpen,
+  onEdit,
   highlight = false,
 }: {
   m: Member;
   info: Info;
   onOpen: (ref: OpenRef) => void;
+  onEdit?: () => void;
   highlight?: boolean;
 }) {
   return (
@@ -173,6 +175,19 @@ function PersonCard({
             Stretched
           </span>
         )}
+        {onEdit && (
+          <button
+            type="button"
+            onClick={onEdit}
+            aria-label={`Edit ${m.name}`}
+            title="Edit details"
+            className="-mr-1.5 mt-0.5 shrink-0 rounded-md p-1.5 text-muted hover:bg-track hover:text-ink"
+          >
+            <svg viewBox="0 0 20 20" fill="currentColor" className="h-4.5 w-4.5" aria-hidden>
+              <path d="M13.6 2.6a2 2 0 0 1 2.8 0l1 1a2 2 0 0 1 0 2.8l-9.3 9.3a1 1 0 0 1-.46.26l-3.9 1a.75.75 0 0 1-.91-.91l1-3.9a1 1 0 0 1 .26-.46l9.5-9.1Z" />
+            </svg>
+          </button>
+        )}
       </header>
 
       {(m.email || m.phone || m.employmentType || m.startDate) && (
@@ -191,7 +206,7 @@ function PersonCard({
             <div className="flex gap-2">
               <dt className="sr-only">Phone</dt>
               <dd>
-                <a href={`tel:${m.phone.replace(/[^d+]/g, "")}`} className="hover:text-st-blue">
+                <a href={`tel:${m.phone.replace(/[^\d+]/g, "")}`} className="hover:text-st-blue">
                   {m.phone}
                 </a>
               </dd>
@@ -336,18 +351,49 @@ function FieldError({ id, message }: { id: string; message?: string }) {
   );
 }
 
-function AddEmployeeForm({ onCreated, onCancel }: { onCreated: (name: string) => void; onCancel: () => void }) {
-  const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
-  const [emailEdited, setEmailEdited] = useState(false); // stop auto-suggesting once the user types their own
-  const [phone, setPhone] = useState("");
-  const [title, setTitle] = useState("");
-  const [department, setDepartment] = useState("");
-  const [employmentType, setEmploymentType] = useState<EmploymentType>("full_time");
-  const [startDate, setStartDate] = useState(serverToday);
-  const [status, setStatus] = useState<MemberStatus>("active");
-  const [load, setLoad] = useState(60);
-  const [roles, setRoles] = useState<Record<string, string>>({}); // projectId -> role
+/** The person's current project roles (projectId -> role), read from the loaded projects. */
+function currentRoles(m: Member): Record<string, string> {
+  return Object.fromEntries(
+    projects.flatMap((p) =>
+      p.members.filter((x) => (m.id !== undefined && x.memberId === m.id) || x.name === m.name).map((x) => [p.id, x.role]),
+    ),
+  );
+}
+
+const sameRoles = (a: Record<string, string>, b: Record<string, string>) =>
+  Object.keys(a).length === Object.keys(b).length && Object.entries(a).every(([k, v]) => b[k]?.trim() === v.trim());
+
+/** Adds a new person, or edits `member` when given (then only the changed fields are sent). */
+function EmployeeForm({
+  member,
+  onSaved,
+  onRemoved,
+  onCancel,
+  onDirtyChange,
+}: {
+  member?: Member;
+  onSaved: (name: string) => void;
+  onRemoved?: (name: string) => void;
+  onCancel: () => void;
+  onDirtyChange?: (dirty: boolean) => void;
+}) {
+  const editing = !!member;
+  const [initialRoles] = useState(() => (member ? currentRoles(member) : {}));
+  const [name, setName] = useState(member?.name ?? "");
+  const [email, setEmail] = useState(member?.email ?? "");
+  const [emailEdited, setEmailEdited] = useState(editing); // stop auto-suggesting once the user types their own
+  const [phone, setPhone] = useState(member?.phone ?? "");
+  const [title, setTitle] = useState(member?.title ?? "");
+  const [department, setDepartment] = useState(member?.role ?? "");
+  const [employmentType, setEmploymentType] = useState<EmploymentType>(member?.employmentType ?? "full_time");
+  const [startDate, setStartDate] = useState(() => (member ? (member.startDate ?? "") : serverToday()));
+  const [status, setStatus] = useState<MemberStatus>(member?.status ?? "active");
+  const [load, setLoad] = useState(member?.load ?? 60);
+  const [roles, setRoles] = useState<Record<string, string>>(initialRoles); // projectId -> role
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  const [removeError, setRemoveError] = useState("");
+  const closeConfirm = useCallback(() => setConfirmRemove(false), []);
+  const [removing, setRemoving] = useState(false);
   const [projectQuery, setProjectQuery] = useState("");
   const [touched, setTouched] = useState<Partial<Record<Field, boolean>>>({});
   const [attempted, setAttempted] = useState(false);
@@ -361,18 +407,22 @@ function AddEmployeeForm({ onCreated, onCancel }: { onCreated: (name: string) =>
   const mail = (emailEdited ? email : suggested).trim().toLowerCase();
   const mailDomain = mail.split("@")[1] ?? "";
   const typoFix = DOMAIN_TYPOS[mailDomain];
-  const emailOwner = mail ? team.find((m) => m.email?.toLowerCase() === mail) : undefined;
+  const others = team.filter((m) => !member || (member.id !== undefined ? m.id !== member.id : m.name !== member.name));
+  const emailOwner = mail ? others.find((m) => m.email?.toLowerCase() === mail) : undefined;
   const titles = [...new Set(team.map((m) => m.title).filter(Boolean))].sort();
   const projectRoles = [...new Set(projects.flatMap((p) => p.members.map((m) => m.role)))].sort();
 
   const problems: Partial<Record<Field, string>> = {
     name: !clean
       ? "Enter the employee's full name."
-      : team.some((m) => m.name.toLowerCase() === clean.toLowerCase())
+      : others.some((m) => m.name.toLowerCase() === clean.toLowerCase())
         ? `${clean} is already on the team.`
         : "",
+    // People added before emails were recorded can still be edited without one.
     email: !mail
-      ? "Enter a work email address."
+      ? editing && !member.email
+        ? ""
+        : "Enter a work email address."
       : !EMAIL_RE.test(mail)
         ? "Enter a valid email address, e.g. name@company.com."
         : emailOwner
@@ -388,10 +438,54 @@ function AddEmployeeForm({ onCreated, onCancel }: { onCreated: (name: string) =>
   const touch = (f: Field) => setTouched((t) => ({ ...t, [f]: true }));
   const edited = (f: Field) => setServerFields((s) => (s[f] ? { ...s, [f]: "" } : s));
 
+  // What the form would save, and (when editing) which fields differ from the stored person.
+  const values = {
+    name: clean,
+    email: mail,
+    phone: phone.trim().replace(/\s+/g, " "),
+    title: title.trim().replace(/\s+/g, " "),
+    department: department.trim().replace(/\s+/g, " "),
+    employment_type: employmentType,
+    start_date: startDate || null,
+    status,
+    load: Math.round(load),
+  };
+  const stored: Partial<typeof values> = member
+    ? {
+        name: member.name,
+        email: member.email ?? "",
+        phone: member.phone ?? "",
+        title: member.title,
+        department: member.role,
+        employment_type: member.employmentType ?? "full_time",
+        start_date: member.startDate ?? null,
+        status: member.status ?? "active",
+        load: member.load,
+      }
+    : {};
+  const changed = (Object.keys(values) as (keyof typeof values)[]).filter((k) => values[k] !== stored[k]);
+  const rolesChanged = !sameRoles(initialRoles, roles);
+  const changeCount = changed.length + (rolesChanged ? 1 : 0);
+  const dirty = editing ? changeCount > 0 : !!(clean || phone || title || department || Object.keys(roles).length);
+  useEffect(() => onDirtyChange?.(dirty), [dirty, onDirtyChange]);
+
+  const memberInfo = member ? personInfo(member) : null;
+  const ledIds = new Set(member ? projects.filter((p) => p.lead === member.name).map((p) => p.id) : []);
+  const openWork = memberInfo?.work.length ?? 0;
+  const statusWarning =
+    member && status !== "active" && (member.status ?? "active") === "active" && (openWork || ledIds.size)
+      ? `${member.name.split(" ")[0]} still ${[
+          openWork && `owns ${openWork} open task${openWork === 1 ? "" : "s"}`,
+          ledIds.size && `leads ${ledIds.size} project${ledIds.size === 1 ? "" : "s"}`,
+        ]
+          .filter(Boolean)
+          .join(" and ")}. Consider reassigning that work.`
+      : "";
+
   const toggleProject = (id: string, on: boolean) =>
     setRoles((r) => {
       const next = { ...r };
-      if (on) next[id] = "Team Member";
+      if (on) next[id] = initialRoles[id] ?? "Team Member";
       else delete next[id];
       return next;
     });
@@ -399,7 +493,7 @@ function AddEmployeeForm({ onCreated, onCancel }: { onCreated: (name: string) =>
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setAttempted(true);
-    if (saving) return;
+    if (saving || removing || (editing && !dirty)) return;
     if (firstProblem) {
       document.getElementById(`new-${firstProblem}`)?.focus();
       return;
@@ -408,24 +502,17 @@ function AddEmployeeForm({ onCreated, onCancel }: { onCreated: (name: string) =>
     setServerError("");
     setServerFields({});
     try {
-      // The server creates the person, their project memberships and the activity entries in one step.
-      await mutate(
-        () =>
-          api.createMember({
-            name: clean,
-            email: mail,
-            phone: phone.trim().replace(/\s+/g, " "),
-            title: title.trim(),
-            department: department.trim(),
-            employment_type: employmentType,
-            start_date: startDate || null,
-            status,
-            load: Math.round(load),
-            memberships: Object.entries(roles).map(([projectId, role]) => ({ project_id: numericId(projectId), role: role.trim() })),
-          }),
-        SCOPES.newEmployee,
-      );
-      onCreated(clean);
+      const memberships = Object.entries(roles).map(([projectId, role]) => ({ project_id: numericId(projectId), role: role.trim() }));
+      if (member?.id !== undefined) {
+        // Only the changed fields go to the server; it applies them and the project changes in one transaction.
+        const patch = { ...Object.fromEntries(changed.map((k) => [k, values[k]])), ...(rolesChanged ? { memberships } : {}) };
+        // A rename shows up on tasks, daily updates and decisions too, so refresh everything then.
+        await mutate(() => api.updateMember(member.id!, patch), changed.includes("name") ? undefined : SCOPES.employeeEdit);
+      } else {
+        // The server creates the person, their project memberships and the activity entries in one step.
+        await mutate(() => api.createMember({ ...values, memberships }), SCOPES.newEmployee);
+      }
+      onSaved(clean);
     } catch (err) {
       // Put field-level messages from the server next to the field they belong to.
       const fields = err instanceof ApiError ? err.fields : {};
@@ -435,8 +522,24 @@ function AddEmployeeForm({ onCreated, onCancel }: { onCreated: (name: string) =>
           .map(([f, msgs]) => [f, msgs[0]]),
       );
       setServerFields(mapped);
-      setServerError(Object.keys(mapped).length ? "Please fix the highlighted fields." : errorMessage(err));
+      setServerError(
+        fields.memberships?.join(" ") || (Object.keys(mapped).length ? "Please fix the highlighted fields." : errorMessage(err)),
+      );
       setSaving(false);
+    }
+  };
+
+  const remove = async () => {
+    if (member?.id === undefined || removing) return;
+    setRemoving(true);
+    setRemoveError("");
+    try {
+      await mutate(() => api.deleteMember(member.id!), SCOPES.employeeEdit);
+      onRemoved?.(member.name);
+    } catch (err) {
+      // A 409 explains what they still lead or own.
+      setRemoveError(errorMessage(err));
+      setRemoving(false);
     }
   };
 
@@ -461,7 +564,7 @@ function AddEmployeeForm({ onCreated, onCancel }: { onCreated: (name: string) =>
         <label className={field}>
           Full name
           <input
-            autoFocus
+            autoFocus={!editing}
             autoComplete="off"
             value={name}
             onChange={(e) => {
@@ -507,6 +610,15 @@ function AddEmployeeForm({ onCreated, onCancel }: { onCreated: (name: string) =>
             )}
             {!emailEdited && suggested && !errorFor("email") && (
               <span className="text-[13px] font-normal text-muted">Suggested from the name and the team&apos;s domain. Edit if needed.</span>
+            )}
+            {editing && !mail && suggested && (
+              <button
+                type="button"
+                onClick={() => setEmail(suggested)}
+                className="w-fit text-left text-[13px] font-medium text-st-blue hover:underline"
+              >
+                No email on record. Use {suggested}?
+              </button>
             )}
           </div>
           <div className={field}>
@@ -633,6 +745,7 @@ function AddEmployeeForm({ onCreated, onCancel }: { onCreated: (name: string) =>
             })}
           </div>
           <p className="mt-1.5 text-xs text-muted">{STATUS_HELP[status]}</p>
+          {statusWarning && <p className="mt-2 rounded-lg bg-st-amber/10 px-3 py-2 text-sm text-st-amber-strong">{statusWarning}</p>}
         </div>
       </fieldset>
 
@@ -664,7 +777,10 @@ function AddEmployeeForm({ onCreated, onCancel }: { onCreated: (name: string) =>
 
       <fieldset>
         <legend className="mb-1.5 text-sm font-semibold">
-          Projects <span className="font-normal text-muted">(optional{picked ? `, ${picked} selected` : ""})</span>
+          Projects{" "}
+          <span className="font-normal text-muted">
+            ({editing ? `${picked} selected` : `optional${picked ? `, ${picked} selected` : ""}`})
+          </span>
         </legend>
         {projects.length > 6 && (
           <input
@@ -684,19 +800,43 @@ function AddEmployeeForm({ onCreated, onCancel }: { onCreated: (name: string) =>
         <ul className="max-h-60 divide-y divide-line overflow-y-auto rounded-lg border border-line">
           {shownProjects.map((p) => {
             const on = p.id in roles;
+            const leads = ledIds.has(p.id);
+            const was = p.id in initialRoles;
+            const note = !editing ? "" : leads ? "Lead" : on && !was ? "Adding" : !on && was ? "Removing" : "";
             return (
               <li key={p.id} className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3 py-2">
                 <label className="flex min-w-0 flex-1 items-center gap-2.5 text-[15px]">
-                  <input type="checkbox" checked={on} onChange={(e) => toggleProject(p.id, e.target.checked)} className="h-4 w-4 accent-st-blue" />
-                  <span className="truncate">{p.name}</span>
+                  <input
+                    type="checkbox"
+                    checked={on}
+                    disabled={leads}
+                    onChange={(e) => toggleProject(p.id, e.target.checked)}
+                    className="h-4 w-4 accent-st-blue disabled:opacity-60"
+                  />
+                  <span className={`truncate ${note === "Removing" ? "text-muted line-through" : ""}`}>{p.name}</span>
+                  {note && (
+                    <span
+                      title={leads ? "Change the project lead from the project itself." : undefined}
+                      className={`shrink-0 rounded-full border px-2 text-[12px] font-medium leading-5 ${
+                        note === "Removing"
+                          ? "border-st-red text-st-red-strong"
+                          : note === "Adding"
+                            ? "border-st-green text-st-green"
+                            : "border-line text-muted"
+                      }`}
+                    >
+                      {note}
+                    </span>
+                  )}
                 </label>
                 {on && (
                   <input
                     list="project-roles"
                     aria-label={`Role on ${p.name}`}
                     value={roles[p.id]}
+                    readOnly={leads}
                     onChange={(e) => setRoles((r) => ({ ...r, [p.id]: e.target.value }))}
-                    className={`${control} h-9! w-48 text-sm!`}
+                    className={`${control} h-9! w-48 text-sm! read-only:bg-track/50 read-only:text-muted`}
                     placeholder="Role on this project"
                   />
                 )}
@@ -718,16 +858,49 @@ function AddEmployeeForm({ onCreated, onCancel }: { onCreated: (name: string) =>
         </p>
       )}
 
-      <div className="flex justify-end gap-2 pt-1">
+      {confirmRemove && member && (
+        <ConfirmDialog
+          title="Remove employee?"
+          message={
+            <p>
+              <b className="text-ink">{member.name}</b> will be removed from the team, along with their project memberships. This cannot be
+              undone.
+            </p>
+          }
+          confirmLabel="Remove employee"
+          busyLabel="Removing..."
+          busy={removing}
+          error={removeError}
+          onConfirm={remove}
+          onCancel={closeConfirm}
+        />
+      )}
+
+      <div className="flex flex-wrap items-center gap-2 pt-1">
+        {editing && (
+          <button
+            type="button"
+            onClick={() => {
+              setRemoveError("");
+              setConfirmRemove(true);
+            }}
+            className="rounded-lg px-3 py-2 font-medium text-st-red-strong hover:bg-st-red/8"
+          >
+            Remove from team
+          </button>
+        )}
+        <span className="ml-auto text-sm text-muted" aria-live="polite">
+          {editing && (dirty ? `${changeCount} unsaved change${changeCount === 1 ? "" : "s"}` : "No changes yet")}
+        </span>
         <button type="button" onClick={onCancel} className="rounded-lg border border-line bg-surface px-4 py-2 font-medium hover:bg-track">
           Cancel
         </button>
         <button
           type="submit"
-          disabled={saving}
+          disabled={saving || removing || (editing && !dirty)}
           className="rounded-lg bg-header px-4 py-2 font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-accent dark:text-header"
         >
-          {saving ? "Adding..." : "Add employee"}
+          {editing ? (saving ? "Saving..." : "Save changes") : saving ? "Adding..." : "Add employee"}
         </button>
       </div>
     </form>
@@ -749,9 +922,34 @@ export function TeamView({
   const [sort, setSort] = useState<Sort>("stretched");
   const [status, setStatus] = useState<MemberStatus | "all">("all");
   const [adding, setAdding] = useState(false);
-  const [added, setAdded] = useState<string | null>(null); // highlights the card of the person just added
+  const [editing, setEditing] = useState<Member | null>(null);
+  const [added, setAdded] = useState<string | null>(null); // highlights the card of the person just added or edited
+  const [notice, setNotice] = useState("");
+  const dirty = useRef(false);
+  const onDirtyChange = useCallback((d: boolean) => void (dirty.current = d), []);
+
+  const closeForm = () => {
+    if (dirty.current && !window.confirm("Discard your unsaved changes?")) return;
+    dirty.current = false;
+    setAdding(false);
+    setEditing(null);
+  };
+
+  const flash = (text: string) => {
+    setNotice(text);
+    setTimeout(() => setNotice((n) => (n === text ? "" : n)), 4000);
+  };
+
+  const onRemoved = (name: string) => {
+    dirty.current = false;
+    setEditing(null);
+    flash(`${name} was removed from the team.`);
+  };
 
   const onCreated = (name: string) => {
+    dirty.current = false;
+    if (editing) flash(`Saved changes to ${name}.`);
+    setEditing(null);
     setAdding(false);
     setQuery("");
     setProject("all");
@@ -857,7 +1055,14 @@ export function TeamView({
       {people.length ? (
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 desk:grid-cols-3 xl:gap-5">
           {people.map(({ m, info }) => (
-            <PersonCard key={m.name} m={m} info={info} onOpen={onOpen} highlight={m.name === added} />
+            <PersonCard
+              key={m.id ?? m.name}
+              m={m}
+              info={info}
+              onOpen={onOpen}
+              onEdit={m.id !== undefined ? () => setEditing(m) : undefined}
+              highlight={m.name === added}
+            />
           ))}
         </div>
       ) : (
@@ -866,9 +1071,23 @@ export function TeamView({
         </p>
       )}
 
+      {notice && (
+        <p
+          role="status"
+          className="fixed bottom-5 left-1/2 z-40 -translate-x-1/2 rounded-lg bg-header px-4 py-2.5 text-sm font-medium text-white shadow-lg dark:bg-accent dark:text-header"
+        >
+          {notice}
+        </p>
+      )}
+
       {adding && (
-        <Modal title="Add employee" onClose={() => setAdding(false)} wide>
-          <AddEmployeeForm onCreated={onCreated} onCancel={() => setAdding(false)} />
+        <Modal title="Add employee" onClose={closeForm} wide>
+          <EmployeeForm onSaved={onCreated} onCancel={closeForm} onDirtyChange={onDirtyChange} />
+        </Modal>
+      )}
+      {editing && (
+        <Modal title={`Edit ${editing.name}`} onClose={closeForm} wide>
+          <EmployeeForm member={editing} onSaved={onCreated} onRemoved={onRemoved} onCancel={closeForm} onDirtyChange={onDirtyChange} />
         </Modal>
       )}
     </div>

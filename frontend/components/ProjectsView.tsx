@@ -1,7 +1,9 @@
 "use client";
 
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import {
+  departments,
+  PROJECT_PRIORITIES,
   projectStatus,
   projects,
   startsInLabel,
@@ -10,20 +12,37 @@ import {
   timeUsed,
   type Project,
   type ProjectPhase,
+  type ProjectPriority,
   type ProjectStatus,
   agoLabel,
 } from "@/lib/data";
-import { api, errorMessage } from "@/lib/api";
+import { api, ApiError, errorMessage, type ProjectPatch } from "@/lib/api";
 import { loadMoreProjectHistory, loadProjectHistory, memberId, mutate, nowMs, numericId, SCOPES, useStore, type Scope } from "@/lib/store";
 import { addDaysIso, isoToLocalDate, minutesBetween } from "@/lib/serverClock";
+import { Combobox, DateField } from "./FormControls";
 import { useNow } from "./hooks";
 import type { OpenRef } from "./Overview";
 import { addDays, control, dueText, NewTaskForm, taskGroup } from "./TasksView";
-import { barColor, Modal, ProgressBar, StatusBadge } from "./ui";
+import { barColor, ConfirmDialog, Modal, ProgressBar, StatusBadge } from "./ui";
 
 /* ---------- Helpers ---------- */
 
-const PHASES: ProjectPhase[] = ["Not Started", "In Progress", "At Risk", "On Hold", "Completed"];
+const PHASES: ProjectPhase[] = ["Planning", "Not Started", "In Progress", "At Risk", "On Hold", "Completed", "Cancelled"];
+
+const PRIORITY_TONE: Record<ProjectPriority, string> = {
+  Low: "border-line text-muted",
+  Medium: "border-st-blue/50 text-st-blue",
+  High: "border-st-orange text-st-orange-strong",
+  Critical: "border-st-red bg-st-red/8 text-st-red-strong",
+};
+
+function PriorityPill({ priority }: { priority: ProjectPriority }) {
+  return (
+    <span className={`inline-block rounded-full border px-2 text-[12px] font-semibold leading-5 ${PRIORITY_TONE[priority]}`}>
+      {priority}
+    </span>
+  );
+}
 
 const STATUS_FILTERS: { value: ProjectStatus | "all"; label: string }[] = [
   { value: "all", label: "All" },
@@ -74,11 +93,13 @@ export function healthPoints(p: Project): string[] {
   if (blocked) points.push(`${plural(blocked, "task")} blocked`);
   if (p.phase === "At Risk") points.push("Marked at risk by the project lead");
   if (p.phase === "On Hold") points.push("Put on hold by the project lead");
+  if (p.phase === "Planning") points.push("Still in planning");
+  if (p.phase === "Cancelled") points.push("Cancelled");
   return points;
 }
 
 function timeLeft(p: Project) {
-  if (p.phase === "Completed") return "Completed";
+  if (p.phase === "Completed" || p.phase === "Cancelled") return p.phase;
   const d = p.endOffset;
   if (d < 0) return `${plural(-d, "day")} past deadline`;
   if (d === 0) return "Due today";
@@ -125,8 +146,12 @@ function ProjectCard({
         <h3 className="pt-0.5 text-base font-bold">{p.name}</h3>
         <StatusBadge status={status} />
       </div>
-      <p className="mt-0.5 text-sm text-muted">
-        {p.department} · Lead {p.lead}
+      <p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-sm text-muted">
+        {p.priority !== "Medium" && <PriorityPill priority={p.priority} />}
+        <span>
+          {p.client && `${p.client} · `}
+          {p.department} · Lead {p.lead}
+        </span>
       </p>
       <div className="mt-2.5">
         <ProgressBar done={p.done} time={used} status={status} />
@@ -210,91 +235,483 @@ function Timeline({ list, now, onSelect }: { list: Project[]; now: Date | null; 
   );
 }
 
-function NewProjectForm({ onCreated }: { onCreated: (id: string) => void }) {
-  const [name, setName] = useState("");
-  const [department, setDepartment] = useState("");
-  const [lead, setLead] = useState(team[0]?.name ?? "");
-  const [start, setStart] = useState("");
-  const [end, setEnd] = useState("");
-  const [description, setDescription] = useState("");
-  const [error, setError] = useState("");
+const NEW_PROJECT_STATUSES: ProjectPhase[] = ["Planning", "Not Started", "In Progress", "On Hold", "Completed", "Cancelled"];
+const DESCRIPTION_MAX = 5000; // matches the backend's PROJECT_DESCRIPTION_MAX
+
+type NewProjectField = "name" | "client" | "department" | "lead" | "start" | "end" | "description";
+// Server field names -> form fields, so API validation messages land next to the right input.
+const SERVER_FIELDS: Record<string, NewProjectField> = {
+  name: "name",
+  client: "client",
+  department: "department",
+  lead_id: "lead",
+  start_date: "start",
+  end_date: "end",
+  description: "description",
+};
+
+const leadIdOf = (p: Project) => {
+  const id = team.find((m) => m.name === p.lead)?.id;
+  return id === undefined ? "" : String(id);
+};
+
+/** Creates a project, or edits `project` when given (then only the changed fields are sent, in one request). */
+function ProjectDialog({
+  project,
+  onSaved,
+  onDeleted,
+  onClose,
+}: {
+  project?: Project;
+  onSaved: (id: string) => void;
+  onDeleted?: () => void;
+  onClose: () => void;
+}) {
+  const editing = !!project;
+  const [name, setName] = useState(project?.name ?? "");
+  const [client, setClient] = useState(project?.client ?? "");
+  const [department, setDepartment] = useState(project?.department ?? "");
+  const [lead, setLead] = useState(project ? leadIdOf(project) : ""); // member id
+  const [start, setStart] = useState(project?.startDate ?? "");
+  const [startTyped, setStartTyped] = useState(false); // text entered but not a valid date
+  const [end, setEnd] = useState(project?.endDate ?? "");
+  const [endTyped, setEndTyped] = useState(false);
+  const [status, setStatus] = useState<ProjectPhase>(project?.phase ?? "Planning");
+  const [priority, setPriority] = useState<ProjectPriority>(project?.priority ?? "Medium");
+  const [description, setDescription] = useState(project?.description ?? "");
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
+  const [deleting, setDeleting] = useState(false);
+  const [touched, setTouched] = useState<Partial<Record<NewProjectField, boolean>>>({});
+  const [attempted, setAttempted] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [serverError, setServerError] = useState("");
+  const [serverFields, setServerFields] = useState<Partial<Record<NewProjectField, string>>>({});
+
+  const clean = (s: string) => s.trim().replace(/\s+/g, " ");
+  const departmentOptions = departments.map((d) => ({ value: d, label: d }));
+  // Inactive people are not offered as leads; people on leave are, but marked.
+  const leadOptions = team
+    .filter((m) => m.id !== undefined && (m.status !== "inactive" || (project && m.name === project.lead)))
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((m) => ({ value: String(m.id), label: m.name, hint: m.status === "on_leave" ? "On leave" : m.title }));
+  const duplicate = projects.find((p) => p.id !== project?.id && p.name.toLowerCase() === clean(name).toLowerCase());
+  // Every status is offered when editing (At Risk is set on running projects); new projects start from the short list.
+  const statusOptions = editing ? PHASES : NEW_PROJECT_STATUSES;
+
+  const problems: Partial<Record<NewProjectField, string>> = {
+    name: !clean(name) ? "Enter a project name." : "",
+    client: !clean(client) ? "Enter the client name." : "",
+    department: !clean(department) ? "Select a department." : "",
+    lead: !lead ? "Select a project lead." : "",
+    start: startTyped ? "Enter the start date as dd-mm-yyyy." : !start ? "Select a start date." : "",
+    end: endTyped
+      ? "Enter the deadline as dd-mm-yyyy."
+      : !end
+        ? "Select a deadline."
+        : start && end <= start
+          ? "The deadline must be after the start date."
+          : "",
+    description: description.length > DESCRIPTION_MAX ? `Keep the description under ${DESCRIPTION_MAX} characters.` : "",
+  };
+  const order: NewProjectField[] = ["name", "client", "department", "lead", "start", "end", "description"];
+  const firstProblem = order.find((f) => problems[f]);
+  const errorFor = (f: NewProjectField) => serverFields[f] || ((attempted || touched[f]) && problems[f]) || "";
+  const touch = (f: NewProjectField) => setTouched((t) => ({ ...t, [f]: true }));
+  const edited = (f: NewProjectField) => setServerFields((s) => (s[f] ? { ...s, [f]: "" } : s));
+  // What the form would save, compared with the stored project when editing.
+  const values = {
+    name: clean(name),
+    client: clean(client),
+    department: clean(department),
+    lead_id: lead,
+    start_date: start,
+    end_date: end,
+    phase: status,
+    priority,
+    description: description.trim(),
+  };
+  const stored: Partial<typeof values> = project
+    ? {
+        name: project.name,
+        client: project.client,
+        department: project.department,
+        lead_id: leadIdOf(project),
+        start_date: project.startDate,
+        end_date: project.endDate,
+        phase: project.phase,
+        priority: project.priority,
+        description: project.description,
+      }
+    : {};
+  const changed = (Object.keys(values) as (keyof typeof values)[]).filter((k) => values[k] !== stored[k]);
+  const dirty = editing ? changed.length > 0 || startTyped || endTyped : !!(name || client || department || lead || start || end || description);
+  const openTasks = project ? tasks.filter((t) => t.projectId === project.id && t.state !== "done").length : 0;
+
+  const close = () => {
+    if (saving || deleting) return;
+    if (dirty && !window.confirm(editing ? "Discard your unsaved changes?" : "Discard this new project?")) return;
+    onClose();
+  };
+
+  const closeConfirm = useCallback(() => setConfirmDelete(false), []);
+
+  const remove = async () => {
+    if (!project || deleting) return;
+    setDeleting(true);
+    setDeleteError("");
+    try {
+      await mutate(() => api.deleteProject(numericId(project.id)), SCOPES.newProject);
+      onDeleted?.();
+    } catch (err) {
+      setDeleteError(errorMessage(err)); // a 409 says how many tasks still need to go first
+      setDeleting(false);
+    }
+  };
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    if (saving) return;
-    if (end <= start) return setError("The deadline must be after the start date.");
+    setAttempted(true);
+    if (saving || deleting || (editing && !dirty)) return;
+    if (firstProblem) {
+      document.getElementById(`np-${firstProblem}`)?.focus();
+      return;
+    }
     setSaving(true);
-    setError("");
+    setServerError("");
+    setServerFields({});
     try {
-      // The server sets phase, progress, the lead's team entry and the first history entry.
-      const created = await mutate(() =>
-        api.createProject({
-          name: name.trim(),
-          department: department.trim(),
-          lead_id: memberId(lead),
-          start_date: start,
-          end_date: end,
-          description: description.trim(),
-        }),
+      if (project) {
+        // Only what changed is sent; the server applies it in one step and logs each change in the history.
+        const patch = Object.fromEntries(
+          changed.map((k) => [k, k === "lead_id" ? Number(values.lead_id) : values[k]]),
+        ) as ProjectPatch;
+        await mutate(() => api.updateProject(numericId(project.id), patch), SCOPES.projectEdit);
+        onSaved(project.id);
+        return;
+      }
+      // The server adds the lead to the team and writes the first history entry.
+      const created = await mutate(
+        () =>
+          api.createProject({
+            name: clean(name),
+            client: clean(client),
+            department: clean(department),
+            lead_id: Number(lead),
+            start_date: start,
+            end_date: end,
+            phase: status,
+            priority,
+            description: description.trim(),
+          }),
         SCOPES.newProject,
       );
-      onCreated(String(created.id));
+      onSaved(String(created.id));
     } catch (err) {
-      setError(errorMessage(err));
+      const fields = err instanceof ApiError ? err.fields : {};
+      const mapped: Partial<Record<NewProjectField, string>> = {};
+      for (const [k, msgs] of Object.entries(fields)) if (SERVER_FIELDS[k]) mapped[SERVER_FIELDS[k]] = msgs[0];
+      setServerFields(mapped);
+      setServerError(Object.keys(mapped).length ? "Please fix the highlighted fields." : errorMessage(err));
       setSaving(false);
     }
   };
 
-  const field = "flex flex-col gap-1.5 text-sm font-semibold";
+  const label = "mb-1.5 block text-sm font-semibold";
+  const req = (
+    <span className="text-st-red-strong" aria-hidden>
+      {" "}
+      *
+    </span>
+  );
+  const invalidCls = (f: NewProjectField) => (errorFor(f) ? "border-st-red! focus:ring-st-red/20!" : "");
+  const a11y = (f: NewProjectField) => ({
+    invalid: !!errorFor(f),
+    describedBy: errorFor(f) ? `np-${f}-error` : undefined,
+    onBlur: () => touch(f),
+  });
+  const err = (f: NewProjectField) => <FieldMessage id={`np-${f}-error`} message={errorFor(f)} />;
+
   return (
-    <form onSubmit={submit} className="space-y-4">
-      <label className={field}>
-        Name
-        <input autoFocus required value={name} onChange={(e) => setName(e.target.value)} className={`${control} font-normal`} />
-      </label>
-      <div className="grid gap-4 sm:grid-cols-2">
-        <label className={field}>
-          Department
-          <input value={department} onChange={(e) => setDepartment(e.target.value)} className={`${control} font-normal`} />
-        </label>
-        <label className={field}>
-          Project lead
-          <select value={lead} onChange={(e) => setLead(e.target.value)} className={`${control} font-normal`}>
-            {team.map((m) => (
-              <option key={m.name}>{m.name}</option>
-            ))}
-          </select>
-        </label>
-        <label className={field}>
-          Start date
-          <input type="date" required value={start} onChange={(e) => setStart(e.target.value)} className={`${control} font-normal`} />
-        </label>
-        <label className={field}>
-          Deadline
-          <input type="date" required value={end} onChange={(e) => setEnd(e.target.value)} className={`${control} font-normal`} />
-        </label>
-      </div>
-      <label className={field}>
-        Description
-        <textarea
-          rows={3}
-          value={description}
-          onChange={(e) => setDescription(e.target.value)}
-          className="rounded-lg border border-line bg-surface px-4 py-2 font-normal outline-none focus:border-st-blue focus:ring-2 focus:ring-st-blue/20"
+    <Modal
+      title={editing ? "Edit Project" : "New Project"}
+      onClose={close}
+      wide
+      footer={
+        <>
+          {editing && (
+            <button
+              type="button"
+              onClick={() => {
+                setDeleteError("");
+                setConfirmDelete(true);
+              }}
+              disabled={saving || deleting}
+              className="mr-auto h-10 rounded-lg px-3 text-[15px] font-medium text-st-red-strong hover:bg-st-red/8 disabled:opacity-50"
+            >
+              Delete project
+            </button>
+          )}
+          {editing && (
+            <span className="hidden self-center text-sm text-muted sm:inline" aria-live="polite">
+              {dirty ? `${changed.length || 1} unsaved change${changed.length > 1 ? "s" : ""}` : "No changes yet"}
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={close}
+            disabled={saving || deleting}
+            className="h-10 rounded-lg border border-line bg-surface px-4 text-[15px] font-medium hover:bg-track/60 disabled:opacity-60"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            form="new-project-form"
+            disabled={saving || deleting || (editing && !dirty)}
+            className="h-10 rounded-lg bg-header px-5 text-[15px] font-semibold text-white hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-st-blue/40 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-accent dark:text-header"
+          >
+            {editing ? (saving ? "Saving..." : "Save changes") : saving ? "Creating..." : "Create project"}
+          </button>
+        </>
+      }
+    >
+      <form id="new-project-form" onSubmit={submit} noValidate className="space-y-4">
+        <p className="text-sm text-muted">
+          Fields marked <span className="text-st-red-strong">*</span> are required.
+        </p>
+        {editing && !project.client && (
+          <p className="rounded-lg bg-st-amber/10 px-3 py-2 text-sm text-st-amber-strong">
+            This project was created before clients were recorded. Add the client to save your changes.
+          </p>
+        )}
+
+        <div>
+          <label htmlFor="np-name" className={label}>
+            Project Name{req}
+          </label>
+          <input
+            id="np-name"
+            autoFocus={!editing}
+            autoComplete="off"
+            maxLength={200}
+            value={name}
+            onChange={(e) => {
+              setName(e.target.value);
+              edited("name");
+            }}
+            onBlur={() => touch("name")}
+            aria-required
+            aria-invalid={!!errorFor("name")}
+            aria-describedby={errorFor("name") ? "np-name-error" : undefined}
+            placeholder="e.g. Employee Management System"
+            className={`${control} w-full placeholder:text-muted ${invalidCls("name")}`}
+          />
+          {err("name")}
+          {!errorFor("name") && duplicate && (
+            <p className="mt-1 text-[13px] text-st-amber-strong">A project called {duplicate.name} already exists. You can still create this one.</p>
+          )}
+        </div>
+
+        <div>
+          <label htmlFor="np-client" className={label}>
+            Client{req}
+          </label>
+          <input
+            id="np-client"
+            autoComplete="off"
+            maxLength={120}
+            value={client}
+            onChange={(e) => {
+              setClient(e.target.value);
+              edited("client");
+            }}
+            onBlur={() => touch("client")}
+            aria-required
+            aria-invalid={!!errorFor("client")}
+            aria-describedby={errorFor("client") ? "np-client-error" : undefined}
+            placeholder="Enter client name"
+            className={`${control} w-full placeholder:text-muted ${invalidCls("client")}`}
+          />
+          {err("client")}
+        </div>
+
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div>
+            <label htmlFor="np-department" className={label}>
+              Department{req}
+            </label>
+            <Combobox
+              id="np-department"
+              value={department}
+              onChange={(v) => {
+                setDepartment(v);
+                edited("department");
+              }}
+              options={departmentOptions}
+              placeholder="Select department"
+              allowCreate
+              {...a11y("department")}
+            />
+            {err("department")}
+          </div>
+          <div>
+            <label htmlFor="np-lead" className={label}>
+              Project Lead{req}
+            </label>
+            <Combobox
+              id="np-lead"
+              value={lead}
+              onChange={(v) => {
+                setLead(v);
+                edited("lead");
+              }}
+              options={leadOptions}
+              placeholder="Select employee"
+              emptyText={team.length ? "No matching employee" : "Add employees in the Team tab first"}
+              {...a11y("lead")}
+            />
+            {err("lead")}
+          </div>
+        </div>
+
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div>
+            <label htmlFor="np-start" className={label}>
+              Start Date{req}
+            </label>
+            <DateField
+              id="np-start"
+              value={start}
+              onChange={(iso, typed) => {
+                setStart(iso);
+                setStartTyped(typed);
+                edited("start");
+              }}
+              {...a11y("start")}
+            />
+            {err("start")}
+          </div>
+          <div>
+            <label htmlFor="np-end" className={label}>
+              Deadline{req}
+            </label>
+            <DateField
+              id="np-end"
+              value={end}
+              min={start ? addDaysIso(start, 1) : undefined}
+              onChange={(iso, typed) => {
+                setEnd(iso);
+                setEndTyped(typed);
+                edited("end");
+              }}
+              {...a11y("end")}
+            />
+            {err("end")}
+          </div>
+        </div>
+
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div>
+            <label htmlFor="np-status" className={label}>
+              Project Status
+            </label>
+            <select
+              id="np-status"
+              value={status}
+              onChange={(e) => setStatus(e.target.value as ProjectPhase)}
+              className={`${control} w-full`}
+            >
+              {statusOptions.map((s) => (
+                <option key={s}>{s}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label htmlFor="np-priority" className={label}>
+              Priority
+            </label>
+            <select
+              id="np-priority"
+              value={priority}
+              onChange={(e) => setPriority(e.target.value as ProjectPriority)}
+              className={`${control} w-full`}
+            >
+              {PROJECT_PRIORITIES.map((p) => (
+                <option key={p}>{p}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <div>
+          <div className="flex items-baseline justify-between">
+            <label htmlFor="np-description" className={label}>
+              Description <span className="font-normal text-muted">(optional)</span>
+            </label>
+            {description.length > DESCRIPTION_MAX * 0.8 && (
+              <span className={`text-xs ${description.length > DESCRIPTION_MAX ? "text-st-red-strong" : "text-muted"}`}>
+                {description.length}/{DESCRIPTION_MAX}
+              </span>
+            )}
+          </div>
+          <textarea
+            id="np-description"
+            rows={4}
+            value={description}
+            onChange={(e) => {
+              setDescription(e.target.value);
+              edited("description");
+            }}
+            onBlur={() => touch("description")}
+            aria-invalid={!!errorFor("description")}
+            aria-describedby={errorFor("description") ? "np-description-error" : undefined}
+            placeholder="Describe the project objectives and scope..."
+            className={`w-full resize-y rounded-lg border border-line bg-surface px-3.5 py-2.5 text-[15px] text-ink outline-none placeholder:text-muted focus:border-st-blue focus:ring-2 focus:ring-st-blue/20 ${invalidCls("description")}`}
+          />
+          {err("description")}
+        </div>
+
+        {serverError && (
+          <p role="alert" className="rounded-lg bg-st-red/8 px-3 py-2 text-sm font-medium text-st-red-strong">
+            {serverError}
+          </p>
+        )}
+      </form>
+      {confirmDelete && project && (
+        <ConfirmDialog
+          title="Delete project?"
+          message={
+            <>
+              <p>
+                <b className="text-ink">{project.name}</b> will be permanently deleted, along with its team list and objectives. This
+                cannot be undone.
+              </p>
+              {openTasks > 0 && (
+                <p className="mt-2 text-st-amber-strong">
+                  It still has {openTasks} open task{openTasks === 1 ? "" : "s"}. Delete or finish them first, or the delete will be refused.
+                </p>
+              )}
+            </>
+          }
+          confirmLabel="Delete project"
+          busyLabel="Deleting..."
+          busy={deleting}
+          error={deleteError}
+          onConfirm={remove}
+          onCancel={closeConfirm}
         />
-      </label>
-      {error && <p role="alert" className="text-st-red-strong">{error}</p>}
-      <div className="flex justify-end pt-2">
-        <button
-          type="submit"
-          disabled={saving}
-          className="rounded-lg bg-header px-5 py-2.5 font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-accent dark:text-header"
-        >
-          {saving ? "Creating..." : "Create project"}
-        </button>
-      </div>
-    </form>
+      )}
+    </Modal>
+  );
+}
+
+function FieldMessage({ id, message }: { id: string; message?: string }) {
+  if (!message) return null;
+  return (
+    <p id={id} className="mt-1 text-[13px] font-medium text-st-red-strong">
+      {message}
+    </p>
   );
 }
 
@@ -303,11 +720,13 @@ function ProjectDetail({
   now,
   onOpenTask,
   onAddTask,
+  onEdit,
 }: {
   p: Project;
   now: Date | null;
   onOpenTask: (id: string) => void;
   onAddTask: () => void;
+  onEdit: () => void;
 }) {
   const [objective, setObjective] = useState("");
   const candidates = team.filter((m) => !p.members.some((x) => x.name === m.name));
@@ -382,22 +801,62 @@ function ProjectDetail({
       )}
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h2 className="text-2xl font-bold leading-tight tracking-tight">{p.name}</h2>
-          <span className="mt-1.5 inline-block rounded-full bg-track/70 px-2.5 py-0.5 text-sm text-muted">{p.department}</span>
+          <div className="flex items-center gap-2">
+            <h2 className="text-2xl font-bold leading-tight tracking-tight">{p.name}</h2>
+            <button
+              type="button"
+              onClick={onEdit}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-line px-2.5 py-1 text-sm font-medium text-muted hover:bg-track hover:text-ink"
+            >
+              <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden>
+                <path d="M13.6 2.6a2 2 0 0 1 2.8 0l1 1a2 2 0 0 1 0 2.8l-9.3 9.3a1 1 0 0 1-.46.26l-3.9 1a.75.75 0 0 1-.91-.91l1-3.9a1 1 0 0 1 .26-.46l9.5-9.1Z" />
+              </svg>
+              Edit
+            </button>
+          </div>
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
+            {p.client ? (
+              <span className="inline-block rounded-full bg-track/70 px-2.5 py-0.5 text-sm text-muted">Client: {p.client}</span>
+            ) : (
+              <button
+                type="button"
+                onClick={onEdit}
+                className="inline-block rounded-full border border-dashed border-st-amber px-2.5 py-0.5 text-sm text-st-amber-strong hover:bg-st-amber/10"
+              >
+                + Add client
+              </button>
+            )}
+            <span className="inline-block rounded-full bg-track/70 px-2.5 py-0.5 text-sm text-muted">{p.department}</span>
+          </div>
         </div>
-        <label className="flex flex-col gap-1 text-sm text-muted">
-          Status
-          <select
-            value={p.phase}
-            disabled={busy}
-            onChange={(e) => void run(() => api.updateProject(pid, { phase: e.target.value }))}
-            className={`${control} w-40`}
-          >
-            {PHASES.map((s) => (
-              <option key={s}>{s}</option>
-            ))}
-          </select>
-        </label>
+        <div className="flex flex-wrap gap-3">
+          <label className="flex flex-col gap-1 text-sm text-muted">
+            Priority
+            <select
+              value={p.priority}
+              disabled={busy}
+              onChange={(e) => void run(() => api.updateProject(pid, { priority: e.target.value as ProjectPriority }))}
+              className={`${control} w-32`}
+            >
+              {PROJECT_PRIORITIES.map((x) => (
+                <option key={x}>{x}</option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1 text-sm text-muted">
+            Status
+            <select
+              value={p.phase}
+              disabled={busy}
+              onChange={(e) => void run(() => api.updateProject(pid, { phase: e.target.value }))}
+              className={`${control} w-40`}
+            >
+              {PHASES.map((s) => (
+                <option key={s}>{s}</option>
+              ))}
+            </select>
+          </label>
+        </div>
       </div>
 
       <div className="mt-4 rounded-lg bg-track/50 px-4 py-3.5">
@@ -678,6 +1137,8 @@ export function ProjectsView({
   const [selected, setSelected] = useState<string | null>(focusId);
   const [creating, setCreating] = useState(false);
   const [addingTask, setAddingTask] = useState(false);
+  const [editingProject, setEditingProject] = useState<Project | null>(null);
+  const [notice, setNotice] = useState("");
   const detailRef = useRef<HTMLDivElement>(null);
 
   // Arriving with a project chosen: on narrow screens the detail sits below the list, so scroll to it.
@@ -687,6 +1148,11 @@ export function ProjectsView({
 
   const list = projects.filter((p) => filter === "all" || projectStatus(p) === filter).sort(sorters[sort]);
   const current = list.find((p) => p.id === selected) ?? list[0];
+
+  const flash = (text: string) => {
+    setNotice(text);
+    setTimeout(() => setNotice((n) => (n === text ? "" : n)), 4000);
+  };
 
   const select = (id: string) => {
     setSelected(id);
@@ -772,22 +1238,45 @@ export function ProjectsView({
               now={now}
               onOpenTask={(id) => onOpen({ kind: "task", id })}
               onAddTask={() => setAddingTask(true)}
+              onEdit={() => setEditingProject(current)}
             />
           </div>
         </div>
       )}
 
+      {notice && (
+        <p
+          role="status"
+          className="fixed bottom-5 left-1/2 z-40 -translate-x-1/2 rounded-lg bg-header px-4 py-2.5 text-sm font-medium text-white shadow-lg dark:bg-accent dark:text-header"
+        >
+          {notice}
+        </p>
+      )}
+      {editingProject && (
+        <ProjectDialog
+          project={editingProject}
+          onClose={() => setEditingProject(null)}
+          onSaved={() => {
+            flash("Project updated.");
+            setEditingProject(null);
+          }}
+          onDeleted={() => {
+            flash(`${editingProject.name} was deleted.`);
+            setEditingProject(null);
+            setSelected(null);
+          }}
+        />
+      )}
       {creating && (
-        <Modal title="New project" onClose={() => setCreating(false)}>
-          <NewProjectForm
-            onCreated={(id) => {
-              setCreating(false);
-              setFilter("all");
-              setSelected(id);
-              setMode("cards");
-            }}
-          />
-        </Modal>
+        <ProjectDialog
+          onClose={() => setCreating(false)}
+          onSaved={(id) => {
+            setCreating(false);
+            setFilter("all");
+            setSelected(id);
+            setMode("cards");
+          }}
+        />
       )}
       {addingTask && current && (
         <Modal title={`New task for ${current.name}`} onClose={() => setAddingTask(false)}>

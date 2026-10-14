@@ -89,10 +89,11 @@ class ProjectListView(APIView):
         ser = ProjectCreateSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         data = ser.validated_data
-        phase = Phase.NOT_STARTED if data["start_date"] > rules.today() else Phase.IN_PROGRESS
-        project = Project.objects.create(phase=phase, progress=0, **data)
+        if "phase" not in data:
+            data["phase"] = Phase.NOT_STARTED if data["start_date"] > rules.today() else Phase.IN_PROGRESS
+        project = Project.objects.create(progress=0, **data)
         ProjectMember.objects.create(project=project, member=project.lead, role=LEAD_ROLE)
-        log("project.created", "project", project.id, f"You created {project.name}", project=project)
+        log("project.created", "project", project.id, f"You created {project.name} for {project.client}", project=project)
         return detail_response(project.pk, status=201)
 
 
@@ -114,6 +115,10 @@ class ProjectDetailView(APIView):
             name = data["name"]
         if "department" in data and data["department"] != project.department:
             events.append(("project.updated", f"You moved {name} to the {data['department']} department"))
+        if "client" in data and data["client"] != project.client:
+            events.append(("project.updated", f"You changed the client of {name} to {data['client']}"))
+        if "priority" in data and data["priority"] != project.priority:
+            events.append(("project.priority", f"You changed the priority of {name} from {project.priority} to {data['priority']}"))
         if "description" in data and data["description"] != project.description:
             events.append(("project.updated", f"You updated the description of {name}"))
         if "phase" in data and data["phase"] != project.phase:

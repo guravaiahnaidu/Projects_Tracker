@@ -133,7 +133,7 @@ class PathIdTests(Envelope, ApiTestCase):
             ("post", "/tasks/", {"title": "x", "project_id": huge, "owner_id": project.lead_id, "due_date": "2030-01-01"}),
             ("post", "/tasks/", {"title": "x", "project_id": project.id, "owner_id": huge, "due_date": "2030-01-01"}),
             ("post", f"/projects/{project.id}/members/", {"member_id": huge}),
-            ("post", "/projects/", {"name": "n", "lead_id": huge, "start_date": "2030-01-01", "end_date": "2030-02-01"}),
+            ("post", "/projects/", {"name": "n", "client": "c", "lead_id": huge, "start_date": "2030-01-01", "end_date": "2030-02-01"}),
             ("patch", f"/projects/{project.id}/", {"lead_id": huge}),
             ("post", "/members/", {"name": "N", "title": "t", "department": "d", "memberships": [{"project_id": huge}]}),
         ]
@@ -180,7 +180,7 @@ class TextLengthTests(ApiTestCase):
         from common.limits import PROJECT_DECISION_MAX, PROJECT_DESCRIPTION_MAX, TASK_NOTE_MAX
 
         lead = self.member()
-        base = {"name": "P", "lead_id": lead.id, "start_date": day(-1).isoformat(), "end_date": day(9).isoformat()}
+        base = {"name": "P", "client": "Acme", "lead_id": lead.id, "start_date": day(-1).isoformat(), "end_date": day(9).isoformat()}
         self.assertEqual(self.post("/projects/", {**base, "description": "d" * PROJECT_DESCRIPTION_MAX}).status_code, 201)
         self.assertEqual(self.post("/projects/", {**base, "description": "d" * (PROJECT_DESCRIPTION_MAX + 1)}).status_code, 400)
         project = self.project(name="Q")
