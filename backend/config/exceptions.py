@@ -1,8 +1,15 @@
 """Uniform JSON error envelope: {"error": {"code", "message", "fields"}}."""
 
+import logging
+
+from django.db import IntegrityError
+from django.db.models import ProtectedError
 from rest_framework import status
 from rest_framework.exceptions import APIException, ValidationError
+from rest_framework.response import Response
 from rest_framework.views import exception_handler
+
+logger = logging.getLogger("api")
 
 
 class Conflict(APIException):
@@ -18,6 +25,17 @@ def _flatten(detail):
 
 
 def api_exception_handler(exc, context):
+    # Expected database conflicts become a clean 409. Only these two specific exception types are handled: a race
+    # on a unique value (two requests creating the same name) or a protected relation deleted in between. The
+    # transaction around the view has already been rolled back. The exception text is NOT logged or returned because
+    # on some databases it contains the offending data values.
+    if isinstance(exc, (IntegrityError, ProtectedError)):
+        view = type(context.get("view")).__name__
+        logger.warning("Database conflict (%s) in %s", type(exc).__name__, view)
+        return Response(
+            {"error": {"code": "conflict", "message": "The request conflicts with existing data. Reload and try again.", "fields": {}}},
+            status=status.HTTP_409_CONFLICT,
+        )
     response = exception_handler(exc, context)
     if response is None:
         return None

@@ -117,3 +117,13 @@ class MemberApiTests(ApiTestCase):
         self.assertIn("Finance", res.data["results"])
         self.assertIn("Marketing", res.data["results"])
         self.assertIn("Engineering", res.data["results"])
+
+    def test_list_rejects_unknown_show_and_sort_values(self):
+        # Regression: these used to be silently ignored (200 with an unfiltered list), unlike every other filter.
+        self.member(name="A")
+        for params in ({"show": "bogus"}, {"sort": "bogus"}, {"show": "STRETCHED"}):
+            res = self.get("/members/", **params)
+            self.assertEqual(res.status_code, 400, params)
+            self.assertEqual(res.data["error"]["code"], "validation_error")
+        for params in ({"show": "all"}, {"show": "stretched"}, {"show": "overdue"}, {"show": "blocked"}, {"sort": "name"}, {"sort": "tasks"}, {"sort": "stretched"}):
+            self.assertEqual(self.get("/members/", **params).status_code, 200, params)

@@ -8,6 +8,8 @@ import {
   api,
   errorMessage,
   type ApiActivity,
+  type ApiDailyUpdate,
+  type ApiDecisionRecord,
   type ApiAttention,
   type ApiBrief,
   type ApiDecision,
@@ -21,14 +23,23 @@ import {
 } from "./api";
 import {
   activity,
+  dailyUpdates,
   dashboardCache,
+  decisionRecords,
   departments,
   projects,
   tasks,
   team,
   type Activity,
   type AttentionItem,
+  type DailyUpdate,
   type DecisionItem,
+  type DecisionRecord,
+  type Feedback,
+  type FeedbackType,
+  type OverallStatus,
+  type Outcome,
+  type ReviewStatus,
   type KeyDate,
   type Marker,
   type Member,
@@ -42,7 +53,10 @@ import {
   type WorkloadKind,
   type WorkloadPerson,
 } from "./data";
-import { loadNextPage, PAGE_SIZE, reloadLoaded } from "./activityMerge";
+import { loadNextPage, PAGE_SIZE, reloadLoaded, type HasId, type PageResult } from "./activityMerge";
+
+/** Rows per request for the daily-update and decision-history lists (the server allows up to 1000). */
+export const LIST_PAGE = 100;
 import { diffDays, isValidTimeZone, serverDateIn, serverWallClock } from "./serverClock";
 
 /* ---------- The server's calendar ---------- */
@@ -187,6 +201,48 @@ export type Brief = ReturnType<typeof mapBrief>;
 
 export const fetchBrief = async (): Promise<Brief> => mapBrief(await api.weeklyBrief());
 
+export const mapDailyUpdate = (u: ApiDailyUpdate): DailyUpdate => ({
+  id: String(u.id),
+  employeeId: String(u.employee),
+  employeeName: u.employee_name,
+  projectId: String(u.project),
+  date: u.date,
+  completed: u.completed,
+  inProgress: u.in_progress,
+  nextSteps: u.next_steps,
+  blockers: u.blockers,
+  notes: u.notes || undefined,
+  status: u.status as OverallStatus,
+  sharedAt: u.shared_at,
+  reviewStatus: u.review_status as ReviewStatus,
+  feedback: u.feedback.map(
+    (f): Feedback => ({
+      id: String(f.id),
+      updateId: String(u.id),
+      managerName: f.manager_name,
+      type: f.type as FeedbackType,
+      content: f.content,
+      createdAt: f.created_at,
+    }),
+  ),
+});
+
+export const mapDecisionRecord = (r: ApiDecisionRecord): DecisionRecord => ({
+  id: String(r.id),
+  projectId: r.project === null ? null : String(r.project),
+  title: r.title,
+  outcome: r.outcome as Outcome,
+  notes: r.notes || undefined,
+  decisionDate: r.decision_date,
+  recordedAt: r.recorded_at,
+  projectName: r.project_name,
+  lead: r.lead,
+  health: r.health as ProjectStatus,
+  deadline: r.deadline,
+  context: r.context,
+  activityId: r.activity_id,
+});
+
 /* ---------- Lookups used when sending ids to the API ---------- */
 
 /** The UI identifies people by name; the API wants ids. */
@@ -226,6 +282,11 @@ export interface StoreState {
   activityFeed: FeedInfo;
   /** Paging state of project histories that were opened, by project id. */
   histories: Record<string, FeedInfo>;
+  /** Paging state of the daily-update list (`dailyUpdates` holds the loaded rows) and its server-side "new" count. */
+  updatesFeed: FeedInfo;
+  newUpdates: number;
+  /** Paging state of the decision history (`decisionRecords` holds the loaded rows). */
+  decisionsFeed: FeedInfo;
 }
 
 let state: StoreState = {
@@ -236,6 +297,9 @@ let state: StoreState = {
   serverTimeZone: null,
   activityFeed: readyFeed(0),
   histories: {},
+  updatesFeed: readyFeed(0),
+  newUpdates: 0,
+  decisionsFeed: readyFeed(0),
 };
 const listeners = new Set<() => void>();
 
@@ -266,13 +330,23 @@ function replace<T>(target: T[], next: T[]) {
 /* ---------- Fetching resource groups ---------- */
 
 /** Resource groups a mutation can ask to have refetched. */
-export type Scope = "members" | "projects" | "tasks" | "activity" | "dashboard" | "departments";
+export type Scope = "members" | "projects" | "tasks" | "activity" | "dashboard" | "departments" | "dailyUpdates" | "decisionHistory";
 /** `today` (the server's date and zone) is refetched on a full reload and when the date changes. */
 export type RefreshGroup = Scope | "today";
-const ALL_GROUPS: readonly RefreshGroup[] = ["members", "projects", "tasks", "activity", "dashboard", "departments", "today"];
+const ALL_GROUPS: readonly RefreshGroup[] = [
+  "members",
+  "projects",
+  "tasks",
+  "activity",
+  "dashboard",
+  "departments",
+  "dailyUpdates",
+  "decisionHistory",
+  "today",
+];
 
-interface FeedRows {
-  rows: ApiActivity[];
+interface FeedRows<T = ApiActivity> {
+  rows: T[];
   count: number;
 }
 
@@ -282,6 +356,8 @@ interface Fetched {
   departments?: string[];
   projects?: ApiProject[];
   tasks?: ApiTask[];
+  dailyUpdates?: FeedRows<ApiDailyUpdate> & { newCount: number };
+  decisionHistory?: FeedRows<ApiDecisionRecord>;
   activity?: FeedRows;
   histories?: Record<string, FeedRows>;
   dashboard?: {
@@ -297,6 +373,9 @@ interface Fetched {
 const historyCache = new Map<string, Activity[]>();
 // Bumped every time refreshed activity rows are applied; a page fetched before that is stale.
 let feedEpoch = 0;
+// Same idea for the daily-update and decision-history lists.
+let updatesEpoch = 0;
+let decisionsEpoch = 0;
 
 async function fetchGroups(groups: ReadonlySet<RefreshGroup>): Promise<Fetched> {
   const out: Fetched = {};
@@ -308,6 +387,30 @@ async function fetchGroups(groups: ReadonlySet<RefreshGroup>): Promise<Fetched> 
   if (groups.has("departments")) run(async () => void (out.departments = (await api.listDepartments()).results));
   if (groups.has("projects")) run(async () => void (out.projects = (await api.listProjects()).results));
   if (groups.has("tasks")) run(async () => void (out.tasks = (await api.listTasks()).results));
+  if (groups.has("dailyUpdates")) {
+    // Re-read as many rows as are loaded now (at least one page), so a refetch never shrinks or duplicates the list.
+    const loaded = dailyUpdates.length;
+    run(async () => {
+      let newCount = 0;
+      const r = await reloadLoaded(
+        loaded,
+        async (limit, offset) => {
+          const p = await api.listDailyUpdates(limit, offset);
+          newCount = p.new_count;
+          return p;
+        },
+        LIST_PAGE,
+        loaded > 0 && loaded >= state.updatesFeed.count,
+      );
+      out.dailyUpdates = { ...r, newCount };
+    });
+  }
+  if (groups.has("decisionHistory")) {
+    const loaded = decisionRecords.length;
+    run(async () => {
+      out.decisionHistory = await reloadLoaded(loaded, (limit, offset) => api.decisionHistory(limit, offset), LIST_PAGE, loaded > 0 && loaded >= state.decisionsFeed.count);
+    });
+  }
   if (groups.has("activity")) {
     // Re-read as many rows as are loaded now, so rows never duplicate or vanish.
     const loaded = activity.length;
@@ -375,6 +478,8 @@ function apply(data: Fetched) {
   if (data.departments) replace(departments, data.departments);
   if (data.projects) replace(projects, data.projects.map((p) => mapProject(p, today)));
   if (data.tasks) replace(tasks, data.tasks.map((t) => mapTask(t, today)));
+  if (data.dailyUpdates) replace(dailyUpdates, data.dailyUpdates.rows.map(mapDailyUpdate));
+  if (data.decisionHistory) replace(decisionRecords, data.decisionHistory.rows.map(mapDecisionRecord));
   if (data.activity) replace(activity, data.activity.rows.map(mapActivity));
   if (data.histories) for (const [id, h] of Object.entries(data.histories)) historyCache.set(id, h.rows.map(mapActivity));
   if (data.dashboard) {
@@ -392,6 +497,15 @@ function apply(data: Fetched) {
   if (data.activity) {
     feedEpoch++;
     next.activityFeed = readyFeed(data.activity.count);
+  }
+  if (data.dailyUpdates) {
+    updatesEpoch++;
+    next.updatesFeed = readyFeed(data.dailyUpdates.count);
+    next.newUpdates = data.dailyUpdates.newCount;
+  }
+  if (data.decisionHistory) {
+    decisionsEpoch++;
+    next.decisionsFeed = readyFeed(data.decisionHistory.count);
   }
   if (data.histories) {
     const histories = { ...state.histories };
@@ -446,8 +560,9 @@ export function ensureLoaded() {
  *  - task: create/update/complete/delete change the task list, the open-work lists embedded in projects,
  *    the activity log (and project histories) and every dashboard figure (summary, attention, workload).
  *  - projectEdit: phase/lead/dates/progress change the project, its history and the dashboard figures.
- *  - decision: set/resolve/undo change the project's decision, activity (undo deletes an event) and the
- *    decisions/attention figures.
+ *  - decision: set/resolve/undo change the project's decision, activity (undo deletes an event), the
+ *    decisions/attention figures and the decision history (resolve adds a record, undo removes it).
+ *  - review: opening a daily update marks it reviewed; feedback also writes an activity entry.
  *  - objective, projectMember: only the project (objectives/members) and its history change.
  *  - newProject: a new project row, its first history entry and the dashboard totals.
  *  - newEmployee: the person, their project memberships, activity, workload figures and department list.
@@ -455,7 +570,9 @@ export function ensureLoaded() {
 export const SCOPES = {
   task: ["tasks", "projects", "activity", "dashboard"],
   projectEdit: ["projects", "activity", "dashboard"],
-  decision: ["projects", "activity", "dashboard"],
+  decision: ["projects", "activity", "dashboard", "decisionHistory"],
+  review: ["dailyUpdates"],
+  feedback: ["dailyUpdates", "activity"],
   objective: ["projects", "activity"],
   projectMember: ["projects", "activity"],
   newProject: ["projects", "activity", "dashboard"],
@@ -558,3 +675,65 @@ export async function loadMoreActivity(): Promise<void> {
     setState({ activityFeed: { ...state.activityFeed, moreLoading: false, moreError: errorMessage(e) } });
   }
 }
+
+/* ---------- Paged daily updates and decision history: "Load more" ---------- */
+
+/**
+ * Load the next page of a newest-first list that lives in a shared array. Duplicates are dropped, a refetch that
+ * lands meanwhile discards this page (click again), and a failure is reported through the feed's `moreError`.
+ */
+async function loadMoreFeed<A extends HasId, T extends HasId>(o: {
+  rows: T[];
+  feed: () => FeedInfo;
+  setFeed: (f: FeedInfo) => void;
+  epoch: () => number;
+  fetchPage: (limit: number, offset: number) => Promise<PageResult<A> & { new_count?: number }>;
+  map: (a: A) => T;
+}): Promise<void> {
+  const info = o.feed();
+  if (info.moreLoading || o.rows.length >= info.count) return;
+  o.setFeed({ ...info, moreLoading: true, moreError: null });
+  const epoch = o.epoch();
+  try {
+    let newCount: number | undefined;
+    const page = await loadNextPage(
+      o.rows,
+      async (limit, offset) => {
+        const p = await o.fetchPage(limit, offset);
+        newCount = p.new_count;
+        return p;
+      },
+      o.map,
+      LIST_PAGE,
+    );
+    if (epoch !== o.epoch()) {
+      o.setFeed({ ...o.feed(), moreLoading: false });
+      return;
+    }
+    replace(o.rows, page.rows);
+    o.setFeed(readyFeed(page.count));
+    if (newCount !== undefined) setState({ newUpdates: newCount });
+  } catch (e) {
+    o.setFeed({ ...o.feed(), moreLoading: false, moreError: errorMessage(e) });
+  }
+}
+
+export const loadMoreDailyUpdates = () =>
+  loadMoreFeed({
+    rows: dailyUpdates,
+    feed: () => state.updatesFeed,
+    setFeed: (updatesFeed) => setState({ updatesFeed, version: state.version + 1 }),
+    epoch: () => updatesEpoch,
+    fetchPage: (limit, offset) => api.listDailyUpdates(limit, offset),
+    map: mapDailyUpdate,
+  });
+
+export const loadMoreDecisionRecords = () =>
+  loadMoreFeed({
+    rows: decisionRecords,
+    feed: () => state.decisionsFeed,
+    setFeed: (decisionsFeed) => setState({ decisionsFeed, version: state.version + 1 }),
+    epoch: () => decisionsEpoch,
+    fetchPage: (limit, offset) => api.decisionHistory(limit, offset),
+    map: mapDecisionRecord,
+  });

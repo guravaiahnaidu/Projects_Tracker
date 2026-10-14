@@ -216,3 +216,56 @@ export function agoLabel(minutes: number): string {
   const days = Math.floor(hours / 24);
   return days === 1 ? "Yesterday" : `${days} days ago`;
 }
+
+/* ---------- Daily work updates and recorded decisions (served by the backend, filled by lib/store.ts) ---------- */
+
+export type OverallStatus = "On track" | "At risk" | "Blocked";
+export type ReviewStatus = "new" | "reviewed" | "feedback";
+export type FeedbackType = "Suggestion" | "Appreciation" | "Improvement required" | "Next steps";
+export type Outcome = "Approved" | "Rejected" | "Deferred" | "Resolved";
+
+export interface Feedback {
+  id: string;
+  updateId: string;
+  managerName: string;
+  type: FeedbackType;
+  content: string;
+  createdAt: string; // ISO timestamp
+}
+
+export interface DailyUpdate {
+  id: string;
+  employeeId: string;
+  employeeName: string;
+  projectId: string;
+  date: string; // YYYY-MM-DD, the working day the update covers
+  completed: string[];
+  inProgress: string[];
+  nextSteps: string[];
+  blockers: string[];
+  notes?: string;
+  status: OverallStatus;
+  sharedAt: string; // ISO timestamp
+  reviewStatus: ReviewStatus;
+  feedback: Feedback[];
+}
+
+export interface DecisionRecord {
+  id: string;
+  projectId: string | null; // null once the project has been deleted
+  title: string; // the decision that was asked for
+  outcome: Outcome;
+  notes?: string;
+  decisionDate: string; // YYYY-MM-DD chosen by the manager
+  recordedAt: string; // ISO timestamp when it was saved
+  // Snapshot of the project when the decision was made
+  projectName: string;
+  lead: string;
+  health: ProjectStatus;
+  deadline: string; // YYYY-MM-DD project deadline at the time
+  context: string; // e.g. "71% done with 92% of the time used"
+  activityId: number | null; // the activity entry written when it was recorded (needed to undo it)
+}
+
+export const dailyUpdates: DailyUpdate[] = []; // newest first
+export const decisionRecords: DecisionRecord[] = []; // newest decision first

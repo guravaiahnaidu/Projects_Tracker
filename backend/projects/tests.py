@@ -3,7 +3,7 @@ from datetime import date, timedelta
 from activity.models import ActivityLog
 from config.testing import ApiTestCase, day
 from projects import rules
-from projects.models import Project, ProjectMember
+from projects.models import DecisionRecord, Project, ProjectMember
 
 
 class ProjectRulesTests(ApiTestCase):
@@ -248,3 +248,135 @@ class ProjectApiTests(ApiTestCase):
         self.client.cookies.clear()
         self.assertEqual(self.get(f"/projects/{pid}/").data["progress"], 33)
         self.assertEqual(Project.objects.get(pk=pid).progress, 33)
+
+
+class DecisionHistoryApiTests(ApiTestCase):
+    def pending(self, **kwargs):
+        project = self.project(**kwargs)
+        self.patch(f"/projects/{project.id}/decision/", {"decision": "Approve the plan"})
+        return project
+
+    def resolve(self, project, **body):
+        return self.post(f"/projects/{project.id}/decision/resolve/", body)
+
+    def test_resolve_records_outcome_notes_date_and_snapshot(self):
+        project = self.pending(name="ERP", start=-50, end=50, progress=71)
+        res = self.resolve(project, outcome="Approved", notes=" Go ahead ", decision_date=day(-2).isoformat())
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["project"]["decision"], "")
+        rec = res.data["record"]
+        self.assertEqual(rec["outcome"], "Approved")
+        self.assertEqual(rec["notes"], "Go ahead")
+        self.assertEqual(rec["decision_date"], day(-2).isoformat())
+        self.assertEqual(rec["title"], "Approve the plan")
+        self.assertEqual(rec["project_name"], "ERP")
+        self.assertEqual(rec["context"], "71% done with 50% of the time used")
+        self.assertEqual(rec["deadline"], day(50).isoformat())
+        self.assertEqual(rec["activity_id"], res.data["activity_id"])
+        self.assertEqual(DecisionRecord.objects.count(), 1)
+
+    def test_resolve_defaults_to_resolved_today(self):
+        project = self.pending()
+        rec = self.resolve(project).data["record"]
+        self.assertEqual(rec["outcome"], "Resolved")
+        self.assertEqual(rec["decision_date"], day(0).isoformat())
+
+    def test_resolve_validation_keeps_the_decision_pending(self):
+        project = self.pending()
+        self.assertEqual(self.resolve(project, outcome="Maybe").status_code, 400)
+        res = self.resolve(project, decision_date=day(1).isoformat())
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.data["error"]["message"], "The decision date can't be in the future.")
+        self.assertEqual(self.resolve(project, decision_date="not-a-date").status_code, 400)
+        self.assertEqual(DecisionRecord.objects.count(), 0)
+        project.refresh_from_db()
+        self.assertEqual(project.decision, "Approve the plan")
+
+    def test_cannot_resolve_without_pending_decision(self):
+        project = self.project()
+        self.assertEqual(self.resolve(project, outcome="Approved").status_code, 400)
+        self.assertEqual(DecisionRecord.objects.count(), 0)
+
+    def test_history_list_filters_and_order(self):
+        a = self.pending(name="Alpha")
+        b = self.pending(name="Beta")
+        self.resolve(a, outcome="Approved", decision_date=day(-5).isoformat(), notes="fine")
+        self.resolve(b, outcome="Rejected", decision_date=day(-1).isoformat())
+        rows = self.get("/decision-history/").data["results"]
+        self.assertEqual([r["project_name"] for r in rows], ["Beta", "Alpha"])  # newest decision first
+        names = lambda **p: [r["project_name"] for r in self.get("/decision-history/", **p).data["results"]]
+        self.assertEqual(names(outcome="Approved"), ["Alpha"])
+        self.assertEqual(names(project=a.id), ["Alpha"])
+        self.assertEqual(names(lead=b.lead.name), ["Beta"])
+        self.assertEqual(names(**{"from": day(-3).isoformat()}), ["Beta"])
+        self.assertEqual(names(to=day(-3).isoformat()), ["Alpha"])
+        self.assertEqual(names(q="fine"), ["Alpha"])
+        self.assertEqual(self.get("/decision-history/", outcome="Nope").status_code, 400)
+        self.assertEqual(self.get("/decision-history/", **{"from": "x"}).status_code, 400)
+        self.assertEqual(self.get("/decision-history/", project="abc").status_code, 400)
+
+    def test_history_is_read_only(self):
+        self.assertEqual(self.post("/decision-history/", {}).status_code, 405)
+        self.assertEqual(self.delete("/decision-history/").status_code, 405)
+
+    def test_undo_removes_the_record(self):
+        project = self.pending()
+        activity_id = self.resolve(project, outcome="Deferred").data["activity_id"]
+        self.assertEqual(self.get("/decision-history/").data["count"], 1)
+        undo = self.post(f"/projects/{project.id}/decision/undo/", {"activity_id": activity_id})
+        self.assertEqual(undo.status_code, 200)
+        self.assertEqual(self.get("/decision-history/").data["count"], 0)
+        project.refresh_from_db()
+        self.assertEqual(project.decision, "Approve the plan")
+
+    def test_record_survives_project_deletion(self):
+        project = self.pending(name="Gone")
+        self.resolve(project, outcome="Approved")
+        self.assertEqual(self.delete(f"/projects/{project.id}/").status_code, 204)
+        rows = self.get("/decision-history/").data["results"]
+        self.assertEqual(rows[0]["project_name"], "Gone")
+        self.assertIsNone(rows[0]["project"])
+
+    def test_resolve_and_undo_are_idempotent_and_project_scoped(self):
+        mine = self.pending(name="Mine")
+        other = self.pending(name="Other")
+        first = self.resolve(mine, outcome="Approved")
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(self.resolve(mine, outcome="Approved").status_code, 400)  # repeated resolve: nothing pending
+        self.assertEqual(DecisionRecord.objects.count(), 1)
+        activity_id = first.data["activity_id"]
+        # another project's endpoint cannot undo this project's decision
+        self.assertEqual(self.post(f"/projects/{other.id}/decision/undo/", {"activity_id": activity_id}).status_code, 404)
+        self.assertEqual(DecisionRecord.objects.count(), 1)
+        self.assertEqual(self.post(f"/projects/{mine.id}/decision/undo/", {"activity_id": activity_id}).status_code, 200)
+        self.assertEqual(self.post(f"/projects/{mine.id}/decision/undo/", {"activity_id": activity_id}).status_code, 404)  # repeated undo
+        other.refresh_from_db()
+        self.assertEqual(other.decision, "Approve the plan")  # untouched
+
+    def test_only_the_latest_resolution_can_be_undone(self):
+        project = self.pending()
+        first = self.resolve(project, outcome="Approved").data["activity_id"]
+        self.patch(f"/projects/{project.id}/decision/", {"decision": "Second"})
+        second = self.resolve(project, outcome="Rejected").data["activity_id"]
+        self.assertEqual(self.post(f"/projects/{project.id}/decision/undo/", {"activity_id": first}).status_code, 409)
+        self.assertEqual(self.get("/decision-history/").data["count"], 2)
+        self.assertEqual(self.post(f"/projects/{project.id}/decision/undo/", {"activity_id": second}).status_code, 200)
+
+    def test_history_is_paged(self):
+        for n in range(3):
+            self.resolve(self.pending(name=f"P{n}"), outcome="Approved")
+        res = self.get("/decision-history/", limit=2, offset=2)
+        self.assertEqual((res.data["count"], len(res.data["results"])), (3, 1))
+        for bad in ({"limit": 0}, {"limit": 5000}, {"offset": "x"}):
+            self.assertEqual(self.get("/decision-history/", **bad).status_code, 400, bad)
+
+    def test_page_boundaries(self):
+        for n in range(3):
+            self.resolve(self.pending(name=f"B{n}"), outcome="Approved")
+        past_end = self.get("/decision-history/", offset=3)
+        self.assertEqual((past_end.status_code, past_end.data["results"], past_end.data["count"]), (200, [], 3))
+        self.assertEqual(len(self.get("/decision-history/", limit=3).data["results"]), 3)
+        self.assertEqual(self.get("/decision-history/", limit=1000).status_code, 200)
+        self.assertEqual(self.get("/decision-history/", limit=1001).status_code, 400)
+        ids = [r["id"] for off in (0, 1, 2) for r in self.get("/decision-history/", limit=1, offset=off).data["results"]]
+        self.assertEqual(len(ids), len(set(ids)))

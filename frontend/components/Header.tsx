@@ -1,6 +1,7 @@
 "use client";
 
-import { useNow, useTheme, type ThemePref } from "./hooks";
+import type { ReactNode } from "react";
+import { useTheme, useToday, type ThemePref } from "./hooks";
 
 export const TABS = ["Overview", "Tasks & Deadlines", "Projects", "Team"] as const;
 export type Tab = (typeof TABS)[number];
@@ -41,25 +42,32 @@ const themeOptions: { value: ThemePref; label: string; icon: React.ReactNode }[]
   },
 ];
 
-export default function Header({ tab, onTab }: { tab: Tab; onTab: (t: Tab) => void }) {
-  const now = useNow();
+export default function Header({
+  tab,
+  onTab,
+  actions,
+}: {
+  tab: Tab;
+  onTab: (t: Tab) => void;
+  actions?: ReactNode; // search and refresh controls
+}) {
+  const today = useToday();
   const [theme, setTheme] = useTheme();
-  const dateLabel = now?.toLocaleDateString("en-GB", {
-    weekday: "long",
-    day: "numeric",
-    month: "long",
-    year: "numeric",
-  });
+  const date = today ? new Date(`${today}T00:00:00`) : null;
+  const part = (o: Intl.DateTimeFormatOptions) => date?.toLocaleDateString("en-GB", o) ?? "";
+  const compactDate = date ? `${part({ weekday: "short" })}, ${part({ day: "numeric", month: "short", year: "numeric" })}` : "";
+  const shortDate = part({ day: "numeric", month: "short" });
+  const fullDate = part({ weekday: "long", day: "numeric", month: "long", year: "numeric" });
 
   return (
     <header className="bg-header text-white">
-      <div className="flex flex-wrap items-center gap-x-6 gap-y-1 px-4 sm:px-8 lg:px-12">
-        <div className="py-2.5">
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-1 px-4 sm:px-8 lg:flex-nowrap lg:px-12">
+        <div className="shrink-0 py-2.5">
           <h1 className="text-xl font-bold leading-tight">Executive Dashboard</h1>
           <p className="text-sm text-white/80">Company overview</p>
         </div>
 
-        <nav className="-mx-4 order-last flex w-full overflow-x-auto px-4 lg:order-none lg:mx-0 lg:w-auto lg:px-0" aria-label="Sections">
+        <nav className="-mx-4 order-last flex w-full overflow-x-auto px-4 lg:order-none lg:mx-0 lg:w-auto lg:shrink-0 lg:px-0" aria-label="Sections">
           {TABS.map((t) => {
             const active = t === tab;
             return (
@@ -77,11 +85,9 @@ export default function Header({ tab, onTab }: { tab: Tab; onTab: (t: Tab) => vo
           })}
         </nav>
 
-        <div className="ml-auto flex items-center gap-5 py-2.5">
-          <span className="hidden text-sm text-white/85 desk:inline" suppressHydrationWarning>
-            {dateLabel}
-          </span>
-          <div className="flex overflow-hidden rounded-lg border border-white/25" role="group" aria-label="Theme">
+        <div className="ml-auto flex min-w-0 flex-1 items-center justify-end gap-3 py-2.5 xl:gap-4">
+          {actions}
+          <div className="flex shrink-0 overflow-hidden rounded-lg border border-white/25" role="group" aria-label="Theme">
             {themeOptions.map((o) => {
               const active = o.value === theme;
               return (
@@ -99,6 +105,16 @@ export default function Header({ tab, onTab }: { tab: Tab; onTab: (t: Tab) => vo
               );
             })}
           </div>
+          {today && (
+            <time
+              dateTime={today}
+              title={fullDate}
+              className="hidden shrink-0 whitespace-nowrap text-[13px] tabular-nums text-white/80 lg:inline"
+            >
+              <span className="min-[1240px]:hidden">{shortDate}</span>
+              <span className="hidden min-[1240px]:inline">{compactDate}</span>
+            </time>
+          )}
         </div>
       </div>
     </header>

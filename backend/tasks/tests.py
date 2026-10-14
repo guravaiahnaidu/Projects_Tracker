@@ -226,3 +226,14 @@ class TaskApiTests(ApiTestCase):
         self.patch(f"/tasks/{tid}/", {"priority": "Low"})
         self.assertEqual(self.get(f"/tasks/{tid}/").data["priority"], "Low")
         self.assertEqual(Task.objects.get(pk=tid).priority, "Low")
+
+    def test_priority_filter_is_validated(self):
+        # Regression: priority=bogus used to return 200 with an empty list instead of a 400.
+        project = self.project()
+        self.task(project=project, title="hi", priority="High")
+        self.assertEqual(self.get("/tasks/", priority="High").data["count"], 1)
+        self.assertEqual(self.get("/tasks/", priority="Low").data["count"], 0)
+        res = self.get("/tasks/", priority="bogus")
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.data["error"]["message"], "priority must be High, Medium or Low.")
+        self.assertEqual(self.get(f"/projects/{project.id}/tasks/", priority="bogus").status_code, 400)

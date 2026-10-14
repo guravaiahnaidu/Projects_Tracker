@@ -96,6 +96,7 @@ INSTALLED_APPS = [
     "tasks",
     "activity",
     "dashboard",
+    "updates",
 ]
 
 MIDDLEWARE = [
@@ -128,12 +129,27 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "config.wsgi.application"
 
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": os.environ.get("DJANGO_DB_PATH", BASE_DIR / "db.sqlite3"),
+# SQLite by default (local development). Set DJANGO_DB_ENGINE=postgresql (plus DJANGO_DB_NAME / _USER / _PASSWORD /
+# _HOST / _PORT, read from the environment only) to run against PostgreSQL; this needs the psycopg package, which is
+# not in requirements.txt because SQLite is the supported default.
+if os.environ.get("DJANGO_DB_ENGINE", "sqlite").strip().lower() == "postgresql":
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.postgresql",
+            "NAME": os.environ.get("DJANGO_DB_NAME", "project_tracker"),
+            "USER": os.environ.get("DJANGO_DB_USER", ""),
+            "PASSWORD": os.environ.get("DJANGO_DB_PASSWORD", ""),
+            "HOST": os.environ.get("DJANGO_DB_HOST", "localhost"),
+            "PORT": os.environ.get("DJANGO_DB_PORT", "5432"),
+        }
     }
-}
+else:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": os.environ.get("DJANGO_DB_PATH", BASE_DIR / "db.sqlite3"),
+        }
+    }
 
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
@@ -162,4 +178,24 @@ REST_FRAMEWORK = {
     "DEFAULT_PARSER_CLASSES": ["rest_framework.parsers.JSONParser"],
     "UNAUTHENTICATED_USER": None,
     "EXCEPTION_HANDLER": "config.exceptions.api_exception_handler",
+    "DEFAULT_THROTTLE_CLASSES": ["config.throttling.WriteRateThrottle", "config.throttling.ReadRateThrottle"],
+    "DEFAULT_THROTTLE_RATES": {
+        "write": os.environ.get("DJANGO_THROTTLE_WRITE", "120/min"),
+        "read": os.environ.get("DJANGO_THROTTLE_READ", "600/min"),
+    },
+    # 0 = trust only REMOTE_ADDR; raise it only when that many trusted reverse proxies sit in front (see throttling.py).
+    "NUM_PROXIES": int(os.environ.get("DJANGO_NUM_PROXIES", "0")),
+}
+
+# Server-side logging: errors and the API's own warnings go to the console (stderr). Request bodies, tokens and
+# personal data are never logged by this configuration; the "api" logger records only the view and exception type.
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {"plain": {"format": "%(asctime)s %(levelname)s %(name)s: %(message)s"}},
+    "handlers": {"console": {"class": "logging.StreamHandler", "formatter": "plain"}},
+    "loggers": {
+        "api": {"handlers": ["console"], "level": "INFO", "propagate": False},
+        "django.request": {"handlers": ["console"], "level": "ERROR", "propagate": False},
+    },
 }

@@ -168,3 +168,29 @@ body {
     }
   }
 }
+
+/* Short-lived confirmation toast (e.g. after Refresh): visible, then fades out on its own. */
+@keyframes toast-life {
+  0% {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  6%,
+  80% {
+    opacity: 1;
+    transform: none;
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-6px);
+    visibility: hidden;
+  }
+}
+.toast-life {
+  animation: toast-life 3.2s ease forwards;
+}
+@media (prefers-reduced-motion: reduce) {
+  .toast-life {
+    animation-timing-function: steps(1, end);
+  }
+}

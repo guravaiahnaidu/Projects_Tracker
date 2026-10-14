@@ -1426,3 +1426,405 @@ Proposed design (smallest design that meets the requirement):
             DJANGO_ACKNOWLEDGE_NO_AUTH escape hatch.
  Tests planned: permission matrix per endpoint and role, object-level access (other project's task/member), CSRF on unsafe methods, login throttling, actor recorded on
             every mutation, anonymous requests rejected in production mode, development flag still allows the current open workflow.
+
+
+==============================================================================
+## UPDATE 2026-10-14 - BACKEND INTEGRATION (supersedes "no backend exists" above)
+==============================================================================
+Status: a Django REST backend (APIView + explicit path() only) exists in backend/ and the frontend now reads and writes
+all business data through it (frontend/lib/api.ts -> lib/store.ts). No mock/sample business data remains.
+
+Added in this pass (required by the new frontend features):
+- projects.DecisionRecord model (outcome, notes, decision_date, project snapshot). Migration projects/0002.
+- updates app: DailyUpdate + Feedback models. Migration updates/0001.
+- Endpoints (all APIView):
+  GET  /api/v1/decision-history/            filters: outcome, project, lead, from, to, q
+  POST /api/v1/projects/<id>/decision/resolve/   body: outcome (Approved|Rejected|Deferred|Resolved), notes, decision_date
+  POST /api/v1/projects/<id>/decision/undo/      body: activity_id (also deletes the record)
+  GET/POST        /api/v1/daily-updates/         GET filters: project, employee, date, review, q
+  GET/PATCH       /api/v1/daily-updates/<id>/    PATCH: content fields, review_status="reviewed" (New -> Reviewed only)
+  POST            /api/v1/daily-updates/<id>/feedback/   body: type, content
+Rules: one update per person+project+day (409 on duplicate); update date cannot be in the future; decision date cannot be
+in the future; blocked task needs a note; member with tasks/projects/updates cannot be deleted (409); project with tasks
+cannot be deleted (409); deleting a project removes its daily updates; decision records survive project deletion.
+
+Known gaps / decisions: no authentication (API is open, manager name defaults to "Manager"); no UI exists for deleting
+projects/members/objectives or editing members (backend endpoints exist); no UI for employees to submit daily updates
+(POST /daily-updates/ exists for that).
+Fixed: progress slider dropped a second step made while the first save was in flight (ProjectsView).
+
+
+==============================================================================
+## AUDIT 2026-10-14 (second pass): confirmed defects, fixes, remaining risks
+==============================================================================
+CONFIRMED DEFECTS (fixed, with regression tests)
+1. [Security, medium] POST /daily-updates/<id>/feedback/ accepted a client-supplied `manager_name`, i.e. a caller could
+   impersonate any manager. Fix: field removed; the actor label is server-set ("Manager") until real authentication exists.
+   Tests: updates/tests.py::test_feedback_appends_and_sets_status (supplied name ignored).
+2. [Reliability] Failed "mark reviewed" was swallowed silently. Fix: lib/dailyUpdates.ts throws; DailyUpdates.tsx shows the
+   server message with a Retry button; status stays "New" (it only changes after the server accepts). Verified in browser.
+3. [Consistency] resolve/undo of a decision and feedback/PATCH on updates read-then-wrote without a row lock. Fix:
+   select_for_update inside the existing transactions (effective on PostgreSQL/MySQL; SQLite serialises writes anyway).
+   Tests: repeated resolve -> 400, repeated undo -> 404, undo through another project's URL -> 404, only the latest
+   resolution undoable (409).
+4. [Scalability] decision-history and daily-updates lists were unbounded. Fix: limit (default 500, max 1000) / offset with
+   total `count`; invalid values -> 400. Indexes added (updates 0002, projects 0003).
+5. [Earlier, fixed] progress slider lost a second step made during an in-flight save (ProjectsView).
+
+AUTHENTICATION / AUTHORISATION - VERIFIED, NOT IMPLEMENTED (product decision required)
+Verified in config/settings.py: DEFAULT_AUTHENTICATION_CLASSES = [], DEFAULT_PERMISSION_CLASSES = AllowAny. Every endpoint
+(members, projects, tasks, updates, feedback, decisions incl. resolve/undo, progress) can be read and changed by anyone who
+can reach the API. No user/role model exists and the product has no login screen, so adding authentication means choosing
+identity provider, roles (manager vs employee), and the manager-to-employee relation; that was NOT invented here.
+Consequences until decided: any caller can post a daily update as any employee and can review or give feedback as "the
+manager"; tests proving "unauthorised users are refused" cannot exist yet. Production startup already refuses to run
+unless DJANGO_ACKNOWLEDGE_NO_AUTH=true (plus secret key, hosts, https CORS). Do NOT expose this API publicly.
+Checked and sound: protected fields (employee, project, date) cannot be changed via PATCH; feedback is bound to the URL's
+update; undo is bound to the URL's project; CORS limited to configured origins; DEBUG off and a strong secret enforced in production.
+
+DECISION UNDO SEMANTICS: undo deletes the DecisionRecord and the resolve activity entry (established behaviour, covered by
+existing tests). A reversal audit trail would be a product change; not made.
+
+NOT DONE: no UI for employees to submit daily updates (API exists). Without authentication such a form would let anyone
+submit as anyone, so it is deferred with the authentication decision. No UI for deleting projects/members/objectives.
+DEPLOYMENT NOTE: run `python manage.py migrate` on the existing database (projects 0002-0003, updates 0001-0002 are pending there).
+
+
+
+==============================================================================
+PROJECT TRACKER — BACKEND API VERIFICATION REPORT
+==============================================================================
+Date: 2026-10-14. Every status below comes from a request that was actually executed in this audit
+(backend/config/test_api_audit_*.py); none is inferred from a route definition or from Django starting.
+
+### A. Environment
+- Python 3.14.4, Django 5.2.17, Django REST Framework 3.18.1, django-cors-headers (requirements.txt).
+- Database for all mutating tests: Django's throw-away test database (SQLite, created and destroyed per run). The real
+  backend/db.sqlite3 was NOT used for tests and was not modified by this audit.
+- Commands: `cd backend && python manage.py test` (exit status 0, 168 tests) and, to export the raw probe results,
+  `AUDIT_OUT=<file>.json python manage.py test config`. Run date 2026-10-14.
+- Test client: DRF/Django test client (full URL routing, middleware, parsers, serializers, views, ORM). It does not go
+  over a TCP socket. In addition a READ-ONLY smoke test (HTTP GET/OPTIONS only) was run against the live dev server
+  started with `manage.py runserver` on the real (currently empty) database: all list/summary GET routes returned 200,
+  detail routes returned 404 for non-existent ids, an unknown path returned 404, and a CORS preflight from
+  http://localhost:3000 returned 200. Mutating requests were never sent to the real database.
+- Unavailable / not exercised: no external services are used by the backend. Production settings (DJANGO_ENV=production)
+  were not run against a real host. Real database concurrency (see F) cannot be exercised on SQLite.
+
+### B. Complete Endpoint Inventory
+Discovered from the live URL resolver: 29 API routes under /api/v1/, 42 endpoint-method combinations.
+(Django admin at /admin/ and the JSON-404 catch-all are not API endpoints and are not counted.)
+
+Query parameters / body fields are those enforced by the serializers and were exercised by the probes listed per row.
+Authentication / permissions for EVERY row: none. DEFAULT_AUTHENTICATION_CLASSES=[] and AllowAny (see H).
+
+| Method | Endpoint | APIView | Status | HTTP Result | Verified Behavior | Defect |
+|---|---|---|---|---|---|---|
+| GET | /api/v1/members/ | MemberListView | WORKING | 200,400,405 | 11 probes (authz-open 1, filter 3, invalid-query 4, sort 1, unsupported-method 1, valid 1). list with computed stats; q matches name/title/department/project; project filter; show=stretched|overdue|blocked | FIXED: show/sort values were not validated (HTTP 200 for show=bogus, sort=bogus) |
+| POST | /api/v1/members/ | MemberListView | WORKING | 201,400,405,415 | 26 probes (content-type 1, invalid-input 21, unsupported-method 1, valid 3). creates, persists, logs activity; default load 60 when omitted; memberships created with the member | none |
+| GET | /api/v1/members/departments/ | DepartmentListView | WORKING | 200,405 | 3 probes (authz-open 1, unsupported-method 1, valid 1). union of member + project departments, sorted, unique | none |
+| GET | /api/v1/members/<id>/ | MemberDetailView | WORKING | 200,404,405 | 6 probes (authz-open 1, invalid-input 2, missing-id 1, unsupported-method 1, valid 1). detail with projects and open work | none |
+| PATCH | /api/v1/members/<id>/ | MemberDetailView | WORKING | 200,400,404,405,415 | 14 probes (content-type 1, invalid-input 7, missing-id 1, security 1, unsupported-method 1, valid 3). partial update persists + logs; empty body is a no-op (no activity); keeping own name is allowed; protected/derived fields cannot be overwritten | none |
+| DELETE | /api/v1/members/<id>/ | MemberDetailView | WORKING | 204,404,405,409 | 6 probes (business-rule 3, missing-id 1, unsupported-method 1, valid 1). removes member + memberships, logs, repeat -> 404; leads a project -> 409, member kept; owns a task -> 409, member kept; has daily updates -> 409 (no 500) | none |
+| GET | /api/v1/projects/ | ProjectListView | WORKING | 200,400,405 | 8 probes (authz-open 1, filter 1, invalid-query 2, sort 1, unsupported-method 1, valid 2). list shape (summary rows); detail=1 adds objectives/members/open_tasks; health filter | none |
+| POST | /api/v1/projects/ | ProjectListView | WORKING | 201,400,405,415 | 19 probes (content-type 1, invalid-input 15, unsupported-method 1, valid 2). creates, lead membership, activity, persisted; future start -> Not Started | none |
+| GET | /api/v1/projects/<id>/ | ProjectDetailView | WORKING | 200,404,405 | 5 probes (authz-open 1, invalid-input 1, missing-id 1, unsupported-method 1, valid 1). detail incl. objectives/members/open_tasks | none |
+| PATCH | /api/v1/projects/<id>/ | ProjectDetailView | WORKING | 200,400,404,405,415 | 18 probes (content-type 1, invalid-input 12, missing-id 1, security 1, unsupported-method 1, valid 2). all fields persist; lead rules; one activity per change; unchanged values write no activity; id/created_at/health cannot be overwritten | none |
+| DELETE | /api/v1/projects/<id>/ | ProjectDetailView | WORKING | 204,404,405,409 | 5 probes (business-rule 2, missing-id 1, unsupported-method 1, valid 1). removes project + objectives + memberships; logs; repeat -> 404; project with tasks -> 409, nothing removed; deleting a project removes its updates (no orphans); member with updates is kept | none |
+| GET | /api/v1/projects/<id>/history/ | ProjectHistoryView | WORKING | 200,400,404,405 | 10 probes (authz-open 1, invalid-query 4, missing-id 1, paging 2, unsupported-method 1, valid 1). newest first, scoped to the project; limit/offset window + total count; limit above max is capped, not an error | none |
+| GET | /api/v1/projects/<id>/tasks/ | ProjectTaskListView | WORKING | 200,400,404,405 | 6 probes (authz-open 1, invalid-query 2, missing-id 1, unsupported-method 1, valid 1). only this project's tasks, with counts | FIXED: priority filter was not validated (same shared filter as GET /tasks/) |
+| GET | /api/v1/projects/<id>/members/ | ProjectMemberListView | WORKING | 200,404,405 | 4 probes (authz-open 1, missing-id 1, unsupported-method 1, valid 1). lists team with roles | none |
+| POST | /api/v1/projects/<id>/members/ | ProjectMemberListView | WORKING | 201,400,404,405,415 | 10 probes (content-type 1, invalid-input 5, missing-id 1, unsupported-method 1, valid 2). adds member, role trimmed, persisted, returns project; role defaults to Team Member | none |
+| DELETE | /api/v1/projects/<id>/members/<member_id>/ | ProjectMemberDetailView | WORKING | 204,400,404,405,409 | 5 probes (business-rule 1, invalid-input 1, missing-id 1, unsupported-method 1, valid 1). removes membership; repeat -> 404; project lead cannot be removed -> 409 | none |
+| POST | /api/v1/projects/<id>/objectives/ | ProjectObjectiveListView | WORKING | 201,400,404,405,415 | 8 probes (content-type 1, invalid-input 4, missing-id 1, unsupported-method 1, valid 1). adds objective (whitespace collapsed), persisted | none |
+| PATCH | /api/v1/projects/<id>/objectives/<objective_id>/ | ProjectObjectiveDetailView | WORKING | 200,400,404,405 | 7 probes (invalid-input 2, missing-id 1, security 1, unsupported-method 1, valid 2). edits and persists, logs; same text is a no-op; objective of another project -> 404, untouched | none |
+| DELETE | /api/v1/projects/<id>/objectives/<objective_id>/ | ProjectObjectiveDetailView | WORKING | 204,404,405 | 4 probes (missing-id 1, security 1, unsupported-method 1, valid 1). objective of another project -> 404, kept; removes objective, persisted; repeat -> 404 | none |
+| PATCH | /api/v1/projects/<id>/decision/ | ProjectDecisionView | WORKING | 200,400,404,405,415 | 8 probes (content-type 1, invalid-input 3, missing-id 1, unsupported-method 1, valid 2). sets (trimmed), persists, logs decision.requested; clears (empty string), logs decision.cleared | none |
+| POST | /api/v1/projects/<id>/decision/resolve/ | ProjectDecisionResolveView | WORKING | 200,400,404,405,415 | 15 probes (business-rule 1, content-type 1, invalid-input 9, missing-id 1, unsupported-method 1, valid 2). saves record + snapshot, clears pending, logs; repeat resolve -> 400, still one record; bare body defaults to Resolved/today | none |
+| GET | /api/v1/decision-history/ | DecisionHistoryListView | WORKING | 200,400,405 | 12 probes (authz-open 1, filter 1, invalid-query 7, paging 1, unsupported-method 1, valid 1). newest decision first; full record shape; outcome/project/lead/from/to/q filters; limit/offset | none |
+| POST | /api/v1/projects/<id>/decision/undo/ | ProjectDecisionUndoView | WORKING | 200,400,404,405,409 | 7 probes (business-rule 2, invalid-input 1, missing-id 1, security 1, unsupported-method 1, valid 1). restores decision, removes only that record; repeat undo -> 404; another project's URL cannot undo it -> 404; refused while a new decision is pending -> 409 | none |
+| GET | /api/v1/tasks/ | TaskListView | WORKING | 200,308,400,404,405 | 22 probes (authz-open 1, cors 2, filter 5, invalid-query 9, unsupported-method 1, url 2, valid 2). open tasks (done excluded), shape, due-date order; group counts object is exact; status=all|done|blocked|in-progress; q matches title/owner/project | FIXED: priority filter was not validated (HTTP 200 + empty list for priority=bogus) |
+| POST | /api/v1/tasks/ | TaskListView | WORKING | 201,400,405,415 | 22 probes (business-rule 1, content-type 1, invalid-input 17, unsupported-method 1, valid 2). creates with defaults, trims, persists, logs; explicit priority/state accepted; blocked without note -> 400; with note -> 201 | none |
+| GET | /api/v1/tasks/<id>/ | TaskDetailView | WORKING | 200,404,405 | 5 probes (authz-open 1, invalid-input 1, missing-id 1, unsupported-method 1, valid 1). detail incl. derived group/label | none |
+| PATCH | /api/v1/tasks/<id>/ | TaskDetailView | WORKING | 200,400,404,405,415 | 16 probes (business-rule 2, content-type 1, invalid-input 7, missing-id 1, security 1, unsupported-method 1, valid 3). all fields persist + one activity entry; unchanged values write no activity; blocked needs a note (new or existing); task cannot move to another project -> 400 | none |
+| DELETE | /api/v1/tasks/<id>/ | TaskDetailView | WORKING | 204,404,405 | 3 probes (missing-id 1, unsupported-method 1, valid 1). removes task, logs, repeat -> 404 | none |
+| POST | /api/v1/tasks/<id>/complete/ | TaskCompleteView | WORKING | 200,404,405 | 4 probes (missing-id 1, unsupported-method 1, valid 2). marks done, persists, idempotent (one log); blocked task can be completed | none |
+| GET | /api/v1/activity/ | ActivityListView | WORKING | 200,400,405 | 11 probes (authz-open 1, invalid-query 6, paging 2, unsupported-method 1, valid 1). newest first with full row shape; limit/offset windows do not overlap; limit above max capped at 200; offset past end -> empty | none |
+| GET | /api/v1/daily-updates/ | DailyUpdateListView | WORKING | 200,400,405 | 13 probes (authz-open 1, filter 1, invalid-query 7, paging 1, sort 1, unsupported-method 1, valid 1). list shape + new_count; project/employee/date/review/q; limit/offset + total count; q results paged too | none |
+| POST | /api/v1/daily-updates/ | DailyUpdateListView | WORKING | 201,400,405,409,415 | 20 probes (business-rule 1, content-type 1, invalid-input 14, unsupported-method 1, valid 3). creates, cleans blank lines, persists, logs; status defaults to On track; duplicate person+project+day -> 409; same person, other project, same day is allowed | none |
+| GET | /api/v1/daily-updates/<id>/ | DailyUpdateDetailView | WORKING | 200,404,405 | 5 probes (authz-open 1, invalid-input 1, missing-id 1, unsupported-method 1, valid 1). detail | none |
+| PATCH | /api/v1/daily-updates/<id>/ | DailyUpdateDetailView | WORKING | 200,400,404,405,415 | 13 probes (business-rule 1, content-type 1, invalid-input 6, missing-id 1, security 1, unsupported-method 1, valid 2). mark reviewed persists; edits content in place, no duplicate row; reviewed never downgrades feedback-given; employee/project/date/shared_at cannot be changed | none |
+| POST | /api/v1/daily-updates/<id>/feedback/ | DailyUpdateFeedbackView | WORKING | 201,400,404,405,415 | 13 probes (content-type 1, invalid-input 7, missing-id 1, security 1, unsupported-method 1, valid 2). adds feedback, trims, sets status, logs; repeat feedback appends (earlier kept, oldest first); actor name and target update cannot be supplied by the caller | none |
+| GET | /api/v1/dashboard/summary/ | SummaryView | WORKING | 200,405 | 5 probes (authz-open 1, empty-state 1, persistence 1, unsupported-method 1, valid 1). all ten figures match the hand-computed values | none |
+| GET | /api/v1/dashboard/attention/ | AttentionView | WORKING | 200,405 | 3 probes (authz-open 1, unsupported-method 1, valid 1). order and markers: off-track, overdue, blocked, watch, due today | none |
+| GET | /api/v1/dashboard/key-dates/ | KeyDatesView | WORKING | 200,400,405 | 8 probes (authz-open 1, invalid-query 5, unsupported-method 1, valid 1). deadlines and starts inside the window, soonest first | none |
+| GET | /api/v1/dashboard/team-workload/ | TeamWorkloadView | WORKING | 200,405 | 4 probes (authz-open 1, unsupported-method 1, valid 2). open task kinds per person; done excluded; stretched flag; people without open tasks are omitted | none |
+| GET | /api/v1/dashboard/decisions/ | DecisionsView | WORKING | 200,405 | 3 probes (authz-open 1, unsupported-method 1, valid 1). pending decisions ordered by health; cleared ones leave | none |
+| GET | /api/v1/today/ | TodayView | WORKING | 200,405 | 3 probes (authz-open 1, unsupported-method 1, valid 1). server date and zone | none |
+| GET | /api/v1/weekly-brief/ | WeeklyBriefView | WORKING | 200,405 | 4 probes (authz-open 1, empty-state 1, unsupported-method 1, valid 1). stats and every list match hand-computed values | none |
+
+### C. Working APIs
+All 42 endpoint-method combinations marked WORKING above passed every probe, including at least one
+valid request with database/persistence assertions where the method writes, and negative probes (invalid input,
+missing/non-existent ids, invalid query values, business rules, unsupported methods, content type). Persistence was
+verified by reading the database directly (Model.objects) and through a second GET, not only from the response body.
+
+### D. Partially Working APIs
+At the end of the audit: 0 combinations. Before the fixes, 2 were partially working:
+- GET /members/: normal requests worked; show/sort values were not validated (HTTP 200 for show=bogus, sort=bogus). Fixed (see E).
+- GET /tasks/: normal requests worked; priority filter was not validated (HTTP 200 + empty list for priority=bogus). Fixed (see E).
+- (GET /projects/<id>/tasks/ shares the task filter code that had the priority defect. Its pre-fix behaviour was NOT
+  observed by a request - it is inferred from the shared code - so it is not counted in the 'before' totals; the fix and
+  its regression test cover it, and the final audit probe for it passes.)
+
+### E. Failing APIs
+No endpoint failed outright (no 5xx, no broken persistence) in the initial run. Confirmed defects, all FIXED:
+1. GET /api/v1/members/?show=bogus and ?sort=bogus
+   Reproduce: request the URL. Actual: 200 with the full unfiltered/default-sorted list. Expected: 400 JSON error
+   envelope (every other enum filter in the API - projects health/sort, tasks status/group, daily-updates review,
+   decision-history outcome - returns 400). Root cause: members/views.py only branched on the known values.
+   Fix: members/views.py validates show in (all, stretched, overdue, blocked) and sort in (stretched, name, tasks).
+   Regression: members/tests.py::test_list_rejects_unknown_show_and_sort_values + audit probes.
+2. GET /api/v1/tasks/?priority=bogus (also GET /projects/<id>/tasks/?priority=bogus, same filter code)
+   Actual: 200 with an empty list (looks like 'no such tasks'). Expected: 400. Root cause: tasks/queries.py applied
+   the value without validating it. Fix: validated against Priority (High, Medium, Low).
+   Regression: tasks/tests.py::test_priority_filter_is_validated + audit probe.
+
+### F. Blocked and Untested APIs
+- BLOCKED: 0. NOT TESTED: 0 endpoint-method combinations.
+- Not exercised (not endpoints, or impossible here, so NOT counted as working): (1) Concurrent requests: the row
+  locks added with select_for_update only take effect on PostgreSQL/MySQL; SQLite serialises writers, so lost-update
+  races could not be reproduced or shown fixed. (2) Production-mode startup (settings guards) was tested by the
+  existing config/test_settings.py, not re-run against a real deployment. (3) Django admin pages (/admin/) were not audited.
+- Authentication behaviour: no authentication exists, so 'permitted vs unauthorised' cannot be tested; see H.
+
+### G. CRUD Verification (test database; persistence = verified by direct DB read and a fresh GET)
+| Resource | Create | List | Detail | Update | Delete | Persistence |
+|---|---|---|---|---|---|---|
+| Members | PASS POST /members/ | PASS | PASS | PASS PATCH | PASS (409 if leads project / owns tasks / has updates) | PASS |
+| Projects | PASS POST /projects/ | PASS | PASS | PASS PATCH (all fields, lead rules) | PASS (409 if it has tasks; cascades objectives/team/updates) | PASS |
+| Tasks | PASS POST /tasks/ | PASS | PASS | PASS PATCH + POST complete | PASS | PASS |
+| Project team members | PASS POST | PASS GET | n/a (no detail GET) | n/a (role set at creation) | PASS (lead protected, 409) | PASS |
+| Objectives | PASS POST | via project detail | via project detail | PASS PATCH | PASS | PASS |
+| Decisions (project field) | PASS PATCH set | via project/dashboard | - | PASS PATCH clear | n/a | PASS |
+| Decision records | PASS POST resolve | PASS GET /decision-history/ | in list | n/a (immutable by design) | PASS via POST undo (deletes record + event) | PASS |
+| Daily updates | PASS POST | PASS (filters, paging, q) | PASS | PASS PATCH (content, mark reviewed) | n/a (no DELETE endpoint; removed with its project) | PASS |
+| Feedback | PASS POST | embedded in update | embedded | n/a | n/a | PASS |
+| Activity | n/a (written by other endpoints) | PASS paged | n/a | n/a | n/a | PASS |
+| Dashboard / weekly brief / today | n/a (computed) | PASS exact hand-computed figures | - | - | - | PASS (no stale cache) |
+
+### H. Security and Validation
+- AUTHENTICATION / AUTHORISATION: ABSENT BY CURRENT DESIGN. All routes accept anonymous requests; an invalid
+  `Authorization: Bearer ...` header is ignored (probe 'authz-open' on every GET route: same status with and without).
+  Anyone who can reach the API can read and modify every resource, including resolving/undoing decisions and posting
+  updates/feedback as anyone. This is a product decision (roles, identity provider) that is not made here. Do not
+  expose the API publicly. Production start-up refuses to run unless DJANGO_ACKNOWLEDGE_NO_AUTH=true.
+- Access-control probes that DO apply and passed: objective of another project cannot be edited/deleted through a
+  different project's URL (404, untouched); a decision cannot be undone through another project's URL (404);
+  feedback is bound to the update in the URL (body `update`/`update_id` ignored); caller-supplied `manager_name` is
+  ignored; PATCH cannot change ids, derived fields, employee/project/date/shared_at of an update.
+- Validation: missing required fields, wrong types, blank/over-long text, out-of-range numbers, bad dates, future
+  dates where forbidden, unknown enum values, non-existent related ids, duplicates (member names, one update per
+  person/project/day, already-on-team) all returned 400/409 with the standard JSON envelope and left the database
+  unchanged. Form-encoded bodies -> 415; malformed JSON -> 400; unsupported methods -> 405 with an Allow header;
+  non-existent and absurdly large numeric ids -> 404 (never 500); trailing-slash URLs redirect with 308 (method kept).
+- CORS: configured frontend origin allowed on preflight; a foreign origin receives no CORS headers.
+- Server exceptions observed across 394 probes: 0.
+
+### I. Automated Test Results
+- `python manage.py check`: no issues. `python manage.py makemigrations --check --dry-run`: no changes detected.
+- `python manage.py test`: Ran 168 tests, 168 passed, 0 failed, 0 errors, 0 skipped, exit status 0.
+- Of these, the endpoint audit executes 394 recorded probes across the audit test modules; 0 probes failed in the final run.
+  Probe categories: authz-open 21, business-rule 14, content-type 13, cors 2, empty-state 2, filter 11, invalid-input 136, invalid-query 46, missing-id 24, paging 6, persistence 1, security 8, sort 3, unsupported-method 42, url 2, valid 63.
+- Frontend: not re-run for this audit (no frontend files changed in this pass). The earlier browser run (30 checks,
+  isolated database) predates these two backend fixes; the frontend never sends the show/sort/priority query
+  parameters that now validate, so it is unaffected (verified by searching lib/api.ts and lib/store.ts).
+
+### J. Fixes and Remaining Issues
+- Modified: backend/members/views.py (validate show/sort), backend/tasks/queries.py (validate priority),
+  backend/members/tests.py and backend/tasks/tests.py (regression tests).
+- Added: backend/config/audit_support.py and backend/config/test_api_audit_{members,projects,decisions,tasks,dashboard,
+  updates,zz_summary}.py (the audit; the summary test fails if any endpoint/method has no executed probe or any probe fails).
+- The first audit run also reported 4 failures that were mistakes in the audit's own expectations, not API defects
+  (a mis-computed project health in a fixture, a wrong alphabetical expectation, a duplicated keyword in a test helper,
+  and comparing an update against the wrong project). They were corrected in the tests; the API behaviour was right.
+- Unresolved / needs a product decision: authentication and roles (H); whether daily updates need a DELETE endpoint;
+  daily-updates and decision-history lists are capped at 1000 rows per page (default 500) and the UI loads page one only.
+- Recommended next steps: decide authentication; run the audit against PostgreSQL to exercise the row locks; add
+  request throttling before any public exposure (none exists today).
+
+### K. Final Summary (counts derived from the executed results)
+- Unique API routes: 29. Endpoint-method combinations: 42.
+- Discovered: 42; tested (>=1 executed probe): 42.
+- Final status: WORKING 42, PARTIALLY WORKING 0, FAILING 0, BLOCKED 0, NOT TESTED 0.
+- Status before the two fixes: WORKING 40, PARTIALLY WORKING 2, FAILING 0, NOT TESTED 0.
+- Probes executed: 394; failed in the final run: 0.
+
+
+==============================================================================
+PROJECT TRACKER — POST-AUDIT SECURITY AND RELIABILITY REVIEW
+==============================================================================
+Date: 2026-10-14. Baseline: the "BACKEND API VERIFICATION REPORT" above (kept unchanged). Everything below is labelled
+COMPLETED (done and verified by an executed test), RECOMMENDED, or UNVERIFIED.
+
+### 1. Baseline re-verified from the current source (COMPLETED)
+- members/views.py validates show (all|stretched|overdue|blocked) and sort (stretched|name|tasks); tasks/queries.py
+  validates priority; their regression tests exist and pass. The 42 endpoint-method combinations are still covered by
+  backend/config/test_api_audit_*.py (394 probes, 0 failed in the final run; the summary test fails if any is untested).
+- `manage.py check`: no issues. `makemigrations --check --dry-run`: no changes. No new migrations were needed in this pass.
+
+### 2. Security decisions
+- AUTHENTICATION / ROLES: NOT IMPLEMENTED - deliberately. The current requirements record "no login system exists, open
+  decision" (settings.py comment; section 1 of this file: no login page, session, token or role check anywhere). There is no
+  specified identity provider, login flow, role set, or manager-to-employee relation, and any model chosen here would be
+  invented. Implementing it also needs frontend work (login screen, token storage, 401/403 handling) that has no design.
+  Security is therefore NOT fixed and is NOT claimed fixed: every endpoint is still open to anonymous callers
+  (re-confirmed by the 'authz-open' audit probes). The production-startup guard (refuse to start unless
+  DJANGO_ACKNOWLEDGE_NO_AUTH=true, a strong secret key, real hosts, https CORS origins) is unchanged.
+- DECISIONS NEEDED before authentication can be built: (a) how people sign in (company SSO/OIDC, username+password, API
+  tokens); (b) roles - at least Manager and Employee? who may resolve/undo decisions, give feedback, create/delete
+  projects and members; (c) how an employee account maps to a Member record (so "my tasks / my updates" can be enforced
+  and daily updates can only be submitted by their own author); (d) where tokens live in the browser (httpOnly cookie
+  preferred over localStorage); (e) whether the manager identity on feedback/decisions should be stored per record.
+  Once decided, the safe approach is DRF authentication classes + a permission class per view (APIView-compatible), with
+  401/403 tests for anonymous, permitted, forbidden and cross-user/cross-project cases.
+- Hardened in this pass (COMPLETED): the client can no longer supply an actor name (removed earlier); client IP for
+  throttling comes from REMOTE_ADDR only (X-Forwarded-For is ignored unless DJANGO_NUM_PROXIES is set), proven by test.
+
+### 3. Throttling (COMPLETED, tested with the Django test client; not load-tested)
+- config/throttling.py, enabled globally through REST_FRAMEWORK: bucket "write" (POST/PUT/PATCH/DELETE) default 120/min and
+  bucket "read" (GET/HEAD/OPTIONS) default 600/min per client; env DJANGO_THROTTLE_WRITE / DJANGO_THROTTLE_READ;
+  DJANGO_NUM_PROXIES (default 0). Chosen so normal use is far below the limit: one dashboard load is ~15 reads.
+- Tests (config/test_reliability.py::ThrottleTests): ten dashboard refreshes plus a write succeed under the defaults;
+  the (N+1)th write returns 429 with the JSON envelope (code "throttled") and a Retry-After header and the throttled write
+  is NOT executed; POST/PATCH/DELETE share the bucket; reads and writes are separate; a changing X-Forwarded-For does not
+  reset the limit; rejected (400) requests still count.
+- LIMITS OF THIS PROTECTION: counters are in Django's default per-process cache, so with several workers each counts on its
+  own (configure a shared cache such as Redis for real deployments). This is application-level only; it is not a substitute
+  for a firewall / reverse-proxy rate limit / VPN. Do not expose the unauthenticated API publicly.
+- Frontend: a 429 arrives as the standard error envelope and is shown by the existing error handling (message from the
+  server). Not separately exercised in the browser.
+
+### 4. PostgreSQL and concurrency
+- PostgreSQL availability: NONE. No server, no psql, no Docker, no psycopg driver on this machine. Nothing was run on
+  PostgreSQL and no PostgreSQL behaviour is claimed verified.
+- Code review of the write paths (COMPLETED): resolve/undo (row lock on the project inside the transaction, repeat
+  requests -> 400/404, record + event removed together); daily updates (unique constraint + IntegrityError handling ->
+  409); feedback and update PATCH (row lock); task/member/project PATCH (row lock, see below); every multi-row write is
+  inside transaction.atomic.
+- Defect found and fixed (COMPLETED, verified on SQLite): PATCH on tasks, members and projects used a full-row save(), so
+  two concurrent edits of DIFFERENT fields could undo each other (lost update). They now save only the fields in the
+  request (update_fields, plus updated_at). Tests force the interleaving by committing another change in the middle of
+  the request (LostUpdateTests: task, member, project).
+- Defect found and fixed (COMPLETED, verified by test): a unique-constraint race (e.g. two requests creating the same
+  member name between validation and insert) would have surfaced as an unhandled IntegrityError = HTTP 500. The exception
+  handler now maps IntegrityError / ProtectedError to a 409 JSON conflict. The database error text is neither returned nor
+  logged (on PostgreSQL it can contain the offending values).
+- UNVERIFIED: config/test_postgres_concurrency.py contains five real-threads tests (duplicate daily update -> one 201 + one
+  409; duplicate member name -> one 201 + one 409; decision resolved once; resolution undone once; concurrent PATCH of
+  different fields both kept). They are SKIPPED on SQLite (5 skipped in the final run) and have never been executed.
+  To run: install psycopg, set DJANGO_DB_ENGINE=postgresql and the DJANGO_DB_* variables, then
+  `python manage.py test config.test_postgres_concurrency`. DJANGO_DB_ENGINE support in settings.py is new and also untested.
+- SQLite remains the default; the existing local workflow is unchanged.
+
+### 5. Pagination and frontend data completeness (COMPLETED; browser-verified)
+- Inventory of lists: activity (limit/offset, default 50, max 200; UI has Load more) and project history (same) were already
+  paged. Decision history and daily updates (limit/offset, default 500, max 1000, total `count`) were fetched in ONE request
+  and, beyond the page, silently truncated. Tasks, members, projects are unpaged by design (bounded by the team's size);
+  not changed.
+- Frontend now loads daily updates and decision history 100 rows at a time (lib/store.ts, LIST_PAGE) with the same
+  duplicate-safe merge as the activity feed; a refresh re-reads as many rows as are already loaded, so it never shrinks the
+  list or refetches everything. New component LoadMoreFooter: "Showing X of Y updates/decisions" + Load more, with the
+  server's error and a Retry. The "N new" badge and "N recorded" count come from server totals, not the loaded page.
+- Search/filters across pages: while a filter, search box or the navbar search is active and rows remain, the remaining
+  pages are loaded automatically so results cover every row (not just page one). Cost: typing a search on a very large
+  list loads it fully (in pages of 100).
+- Verified in a real browser against 130 seeded updates + 3 decisions (isolated database), 11 of 11 checks: first load
+  requested exactly one page (limit=100); footer "Showing 100 of 130"; Load more fetched offset=100; refresh kept all 130;
+  a search for text that exists only on page 2 found it; the navbar search found it; a failing load-more showed the server
+  message and kept 100 rows; Retry completed the list. Backend page boundaries (empty page past the end, exact fit,
+  short last page, limit=1000 ok, 1001 -> 400, no overlap between pages) are tested for both lists.
+- Earlier regression run (30 browser checks on a fresh isolated database) re-run after the store change: 30 of 30 passed
+  (the single HTTP 500 in its log is a failure that script injects on purpose).
+
+### 6. Missing operations and business rules - decisions, not additions
+Nothing was added "to complete a checklist". Findings:
+- Daily-update deletion: no requirement or UI. Updates are removed only with their project (cascade). DECISION NEEDED
+  (retention/audit policy; who may delete once authentication exists).
+- Employee daily-update submission: the API exists (POST /daily-updates/), there is no UI. Without authentication a form
+  would let anyone submit as anyone, so it waits for the authentication decision.
+- Member editing/deleting, project editing/deleting, objective editing/deleting: the API endpoints exist, are audited and
+  work; the dashboard has no UI for member edit/delete, project delete, or objective edit/delete (project edit is in the
+  UI). Add UI only if the product wants it.
+- Decision history: undo deletes the record and its activity entry (existing, tested behaviour); keeping a reversal audit
+  trail would be a business change. DECISION NEEDED if audit retention is required.
+- Business rules re-checked by the audit and still enforced: project lead is on the team and cannot be removed; a task
+  cannot change project; blocked tasks need a note; one daily update per person+project+day; related-record deletion
+  restrictions (409) for members and projects.
+
+### 7. Error handling and observability (COMPLETED)
+- Unexpected exceptions (programming errors) are NOT swallowed: they propagate, Django logs the full traceback server-side
+  (django.request, level ERROR), and the client gets a JSON 500 {"error": {"code": "server_error", ...}} with no stack
+  trace or internal text (config/views.py::server_error, handler500). Test proves the secret text is logged but not returned.
+- Only IntegrityError and ProtectedError are caught by type (-> 409, logged on logger "api" with the view name and the
+  exception class only). No blanket handler exists.
+- LOGGING (settings.py): console; no request bodies, tokens or personal data are logged by this configuration.
+- Malformed-input sweep (test_reliability.py): bad/empty/null JSON, NUL bytes, huge numbers, bad dates, non-UTF-8 and
+  5000-character query strings against 10 list/create routes: no 5xx.
+- NOTE: with DEBUG=true (development) Django shows its debug page for unexpected errors; production refuses to start
+  with DEBUG on.
+
+### 8. Frontend compatibility
+- Changed: lib/api.ts (limit/offset on the two lists), lib/store.ts (paged feeds), components DailyUpdates, DecisionHistory,
+  GlobalSearch, new LoadMoreFooter. No business data is stored in localStorage (only the theme preference).
+- `npx tsc --noEmit`: clean. `npm run lint`: clean. `npm test`: 24 tests, 24 pass. `npm run build`: compiled successfully.
+- 401/403: not applicable until authentication exists (no tokens are handled anywhere today).
+
+### 9. Tests executed (actual results)
+- `python manage.py test`: Ran 188 tests - 183 passed, 0 failed, 0 errors, 5 skipped (the PostgreSQL concurrency tests),
+  exit status 0. New in this pass: config/test_reliability.py (13 tests: throttling 5, error handling 4, lost updates 4),
+  config/test_postgres_concurrency.py (5, skipped), page-boundary tests in updates/tests.py and projects/tests.py.
+- Browser: 11/11 paging checks and 30/30 regression checks (isolated databases, headless Chromium). The real database was
+  not modified by any test; the dev server was pointed at it again afterwards.
+
+### 10. Remaining risks, product decisions, unverified items
+1. NO AUTHENTICATION OR AUTHORISATION (unchanged, highest risk). Do not expose the API beyond a trusted network.
+2. PostgreSQL concurrency: UNVERIFIED (tests written, not executed). SQLite hides these races.
+3. Throttle counters are per process; load behaviour and a real reverse-proxy setup (DJANGO_NUM_PROXIES) are untested.
+4. 429 handling in the browser UI was not exercised (the generic error path is used).
+5. Product decisions pending: authentication/roles (section 2), daily-update deletion/retention, decision-undo audit trail,
+   employee submission UI, UI for member/project/objective edit and delete.
+6. Recommended next steps: decide authentication; run the PostgreSQL tests; add a shared cache for throttling; consider
+   server-side search for very large update histories instead of loading every page while searching.
+
+### 11. Files
+- Modified (backend): config/settings.py (throttles, NUM_PROXIES, LOGGING, optional PostgreSQL), config/exceptions.py,
+  config/views.py, config/urls.py (handler500), config/testing.py, config/audit_support.py, members/views.py,
+  tasks/views.py, projects/views.py, members/tests.py(earlier), updates/tests.py, projects/tests.py, .env.example.
+- Added (backend): config/throttling.py, config/test_reliability.py, config/test_postgres_concurrency.py.
+- Modified (frontend): lib/api.ts, lib/store.ts, components/DailyUpdates.tsx, DecisionHistory.tsx, GlobalSearch.tsx.
+  Added: components/LoadMoreFooter.tsx. No migrations were created in this pass.
+- Nothing was committed, pushed or uploaded.
+
+
+==============================================================================
+## NOTE 2026-10-14 - URL LAYOUT CHANGE (read this before the older sections above)
+==============================================================================
+The `/api/v1/` prefix was removed at the owner's request. backend/config/urls.py now lists each app with its own prefix:
+  path("members/", include("members.urls")), path("projects/", ...), path("tasks/", ...), path("activity/", ...),
+  path("daily-updates/", ...), path("dashboard/", ...), plus explicit path() lines for decision-history/, today/, weekly-brief/,
+  and a final catch-all (JSON 404, or 308 when only the trailing slash is missing). The app urls.py files are relative to
+  their prefix. Public URLs are therefore /members/, /projects/<id>/, /tasks/, /daily-updates/, /dashboard/summary/ ...
+  Every endpoint table and example in the older sections of this file still shows the former /api/v1/... paths: drop the
+  "/api/v1" part to get the current URL. Request/response contracts are unchanged.
+- Frontend: lib/api.ts default base URL is now http://127.0.0.1:8000 (env NEXT_PUBLIC_API_BASE_URL overrides it;
+  frontend/.env.local.example updated). Anyone with an old .env.local that still ends in /api/v1 must edit it.
+- Verified after the change: manage.py check clean; makemigrations --check: no changes; manage.py test: 188 tests, 183 pass,
+  0 fail, 5 skipped (PostgreSQL-only), including the endpoint audit (it fails if any endpoint/method is unprobed);
+  tsc/lint/frontend tests (24)/build clean; browser regression 30 of 30 on the new URLs. The 11-check paging browser run
+  was NOT repeated after the URL change.
+
+NOTE ON THIS FILE: before the first Git commit of this work, this file was found cut down to its two newest report
+sections (the original frontend audit and the two earlier update sections were missing from the working copy; the cause was
+not determined). It was rebuilt from the committed original (Git HEAD) plus the missing sections re-added from the session
+record; nothing from the committed original was changed.

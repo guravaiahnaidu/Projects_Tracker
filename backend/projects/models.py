@@ -73,3 +73,39 @@ class ProjectObjective(models.Model):
 
     def __str__(self):
         return self.description
+
+
+class Outcome(models.TextChoices):
+    APPROVED = "Approved", "Approved"
+    REJECTED = "Rejected", "Rejected"
+    DEFERRED = "Deferred", "Deferred"
+    RESOLVED = "Resolved", "Resolved"
+
+
+class DecisionRecord(models.Model):
+    """What the manager decided on a pending project decision, with a snapshot of the project at that moment.
+
+    Records are kept when the project is later deleted (the project link is cleared, the snapshot stays).
+    """
+
+    project = models.ForeignKey(Project, null=True, blank=True, on_delete=models.SET_NULL, related_name="decision_records")
+    title = models.TextField()  # the decision that was asked for
+    outcome = models.CharField(max_length=10, choices=Outcome.choices)
+    notes = models.TextField(blank=True, default="")
+    decision_date = models.DateField()
+    recorded_at = models.DateTimeField(auto_now_add=True)
+    # Snapshot of the project when the decision was made
+    project_name = models.CharField(max_length=200)
+    lead_name = models.CharField(max_length=120)
+    health = models.CharField(max_length=12)
+    deadline = models.DateField()
+    context = models.CharField(max_length=120)  # e.g. "71% done with 92% of the time used"
+    # The activity entry written when the decision was resolved (used to undo it).
+    event = models.OneToOneField("activity.ActivityLog", null=True, blank=True, on_delete=models.SET_NULL, related_name="decision_record")
+
+    class Meta:
+        ordering = ["-decision_date", "-recorded_at", "-id"]
+        indexes = [models.Index(fields=["-decision_date"], name="decisionrecord_date")]
+
+    def __str__(self):
+        return f"{self.outcome}: {self.title}"

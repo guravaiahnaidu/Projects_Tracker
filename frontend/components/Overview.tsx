@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import {
   activity,
   agoLabel,
@@ -18,13 +18,19 @@ import {
   type Summary,
   type WorkloadKind,
 } from "@/lib/data";
-import { api, ApiError, errorMessage } from "@/lib/api";
-import { loadMoreActivity, mutate, nowMs, numericId, SCOPES, useStore } from "@/lib/store";
+import { ApiError, errorMessage } from "@/lib/api";
+import { removeDecision, type DecisionRecord } from "@/lib/decisions";
+import { loadMoreActivity, nowMs, useStore } from "@/lib/store";
 import { minutesBetween } from "@/lib/serverClock";
+import DailyUpdates from "./DailyUpdates";
+import DecisionHistory, { DecideForm, OutcomeBadge } from "./DecisionHistory";
 import { useNow } from "./hooks";
 import { Card, CardHeader, MarkerIcon, Modal, ProgressBar, StatusBadge } from "./ui";
 
 export type OpenRef = AttentionItem["ref"];
+
+/** A search result to show on the Overview: opens that daily update or recorded decision. */
+export type OverviewFocus = { update?: string; decision?: string; nonce: number };
 
 /** Where a summary card takes you: a tab, optionally pre-filtered. */
 export type NavTarget =
@@ -275,31 +281,25 @@ function deadlinePhrase(now: Date | null, days: number) {
 }
 
 interface Decided {
-  projectId: string;
   name: string;
-  activityId: number;
+  record: DecisionRecord;
 }
 
 function DecisionsCard({ now, onOpen }: { now: Date | null; onOpen: (ref: OpenRef) => void }) {
+  const [deciding, setDeciding] = useState<DecisionItem | null>(null);
   const [decided, setDecided] = useState<Decided | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  // Pending decisions come from the server already ordered by project health, then deadline.
+  const closeForm = useCallback(() => setDeciding(null), []);
+  // Pending decisions come from the server already ordered by project health, then deadline. Recording an
+  // outcome clears the pending decision on the server, so an item is never pending and decided at once.
   const pending = decisions();
 
-  if (pending.length === 0 && !decided && !error) return null;
-
-  const decide = async (p: DecisionItem) => {
-    setBusy(true);
+  // Runs only after the server has saved the record: the item then leaves the pending list.
+  const onRecorded = (p: DecisionItem, rec: DecisionRecord) => {
+    setDeciding(null);
     setError("");
-    try {
-      const res = await mutate(() => api.resolveDecision(numericId(p.projectId)), SCOPES.decision);
-      setDecided({ projectId: p.projectId, name: p.name, activityId: res.activity_id });
-    } catch (e) {
-      setError(errorMessage(e));
-    } finally {
-      setBusy(false);
-    }
+    setDecided({ name: p.name, record: rec });
   };
 
   const undo = async () => {
@@ -307,7 +307,7 @@ function DecisionsCard({ now, onOpen }: { now: Date | null; onOpen: (ref: OpenRe
     setBusy(true);
     setError("");
     try {
-      await mutate(() => api.undoDecision(numericId(decided.projectId), decided.activityId), SCOPES.decision);
+      await removeDecision(decided.record);
       setDecided(null);
     } catch (e) {
       setError(errorMessage(e));
@@ -322,9 +322,7 @@ function DecisionsCard({ now, onOpen }: { now: Date | null; onOpen: (ref: OpenRe
     <section className="rounded-xl border border-accent/45 bg-accent/8 p-5 shadow-sm" aria-label="Waiting on your decision">
       <header className="flex flex-wrap items-center gap-3">
         <h2 className="text-lg font-bold">Waiting on your decision</h2>
-        {pending.length > 0 && (
-          <span className="rounded-full bg-accent/25 px-2.5 py-0.5 text-sm font-semibold">{pending.length} pending</span>
-        )}
+        <span className="rounded-full bg-accent/25 px-2.5 py-0.5 text-sm font-semibold">{pending.length} pending</span>
       </header>
 
       {pending.length === 0 && <p className="mt-3 text-muted">You are all caught up. No decisions are waiting on you.</p>}
@@ -333,7 +331,11 @@ function DecisionsCard({ now, onOpen }: { now: Date | null; onOpen: (ref: OpenRe
         {pending.map((p) => {
           const status = p.status;
           return (
-            <li key={p.projectId} className="flex flex-col gap-3 py-3 lg:flex-row lg:items-center lg:justify-between">
+            <li
+              key={p.projectId}
+              id={`decision-${p.projectId}`}
+              className="-mx-2 flex scroll-mt-24 flex-col gap-3 rounded-lg px-2 py-3 lg:flex-row lg:items-center lg:justify-between"
+            >
               <div className="min-w-0">
                 <h3 className="font-bold">{p.name}</h3>
                 <p className="mt-0.5 text-[15px]">{p.decision}</p>
@@ -354,7 +356,7 @@ function DecisionsCard({ now, onOpen }: { now: Date | null; onOpen: (ref: OpenRe
                   Open project
                 </button>
                 <button
-                  onClick={() => void decide(p)}
+                  onClick={() => setDeciding(p)}
                   disabled={busy}
                   className="rounded-lg bg-header px-3.5 py-1.5 text-sm font-semibold text-white shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-accent dark:text-header"
                 >
@@ -369,7 +371,8 @@ function DecisionsCard({ now, onOpen }: { now: Date | null; onOpen: (ref: OpenRe
       {decided && (
         <p role="status" className="mt-2 flex flex-wrap items-center gap-x-2 border-t border-accent/30 pt-3 text-sm text-muted">
           <span className="font-semibold text-st-green">✓</span>
-          Decision on <b className="text-ink">{decided.name}</b> marked as made and added to Recent activity.
+          Decision on <b className="text-ink">{decided.name}</b> recorded as <OutcomeBadge outcome={decided.record.outcome} /> and moved
+          to Decision history.
           <button
             onClick={() => void undo()}
             disabled={busy}
@@ -385,6 +388,12 @@ function DecisionsCard({ now, onOpen }: { now: Date | null; onOpen: (ref: OpenRe
           {error}
         </p>
       )}
+
+      {deciding && (
+        <Modal title="Record decision" onClose={closeForm}>
+          <DecideForm pending={deciding} onDone={(rec) => onRecorded(deciding, rec)} onCancel={closeForm} />
+        </Modal>
+      )}
     </section>
   );
 }
@@ -393,10 +402,12 @@ export default function Overview({
   onOpen,
   onBrief,
   onNavigate,
+  focus = null,
 }: {
   onOpen: (ref: OpenRef) => void;
   onBrief: () => void;
   onNavigate: (to: NavTarget) => void;
+  focus?: OverviewFocus | null;
 }) {
   const now = useNow();
   const s = summary();
@@ -463,6 +474,10 @@ export default function Overview({
       </div>
 
       <DecisionsCard now={now} onOpen={onOpen} />
+
+      <DecisionHistory key={focus?.decision ? `h${focus.nonce}` : "history"} onOpen={onOpen} initialSelected={focus?.decision} />
+
+      <DailyUpdates key={focus?.update ? `u${focus.nonce}` : "updates"} initialSelected={focus?.update} />
 
       <div className="grid grid-cols-1 gap-5 desk:grid-cols-2">
         <Card>

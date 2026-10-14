@@ -152,7 +152,7 @@ class PathIdTests(Envelope, ApiTestCase):
         # a JSON array / scalar body is a 400, not an AttributeError
         for raw in ("[]", "[1,2]", '"text"', "7", "null"):
             with self.subTest(raw=raw):
-                res = self.client.post(f"/api/v1{path[0:]}", data=raw, content_type="application/json")
+                res = self.client.post(f"{path[0:]}", data=raw, content_type="application/json")
                 self.assertEqual(res.status_code, 400, raw)
         # unchanged behaviour: missing or unknown id -> 404 "nothing to undo"
         self.assert_envelope(self.post(path, {}), 404)
@@ -171,7 +171,7 @@ class PathIdTests(Envelope, ApiTestCase):
         for method, path in targets:
             for raw in ("[]", '"x"', "5", "null"):
                 with self.subTest(method=method, path=path, raw=raw):
-                    res = getattr(self.client, method)(f"/api/v1{path}", data=raw, content_type="application/json")
+                    res = getattr(self.client, method)(f"{path}", data=raw, content_type="application/json")
                     self.assertEqual(res.status_code, 400)
 
 
@@ -201,22 +201,22 @@ class UnknownRouteAndSlashTests(Envelope, ApiTestCase):
     def test_unknown_api_urls_return_json_envelope(self):
         for method in ("get", "post", "patch", "delete"):
             with self.subTest(method=method):
-                res = getattr(self.client, method)("/api/v1/does/not/exist/")
+                res = getattr(self.client, method)("/does/not/exist/")
                 self.assert_envelope(res, 404)
                 self.assertEqual(res.json()["error"]["code"], "not_found")
                 self.assertTrue(res["Content-Type"].startswith("application/json"))
-        self.assert_envelope(self.client.get("/api/v1/members/abc/"), 404)
-        self.assert_envelope(self.client.get("/api/v1/"), 404)
+        self.assert_envelope(self.client.get("/members/abc/"), 404)
+        self.assert_envelope(self.client.get("/"), 404)
 
     def test_missing_trailing_slash_redirects_with_308_keeping_method(self):
-        for method, path in (("get", "/api/v1/members"), ("post", "/api/v1/tasks"), ("patch", "/api/v1/tasks/1"),
-                             ("delete", "/api/v1/projects/1")):
+        for method, path in (("get", "/members"), ("post", "/tasks"), ("patch", "/tasks/1"),
+                             ("delete", "/projects/1")):
             with self.subTest(path=path):
                 res = getattr(self.client, method)(path)
                 self.assertEqual(res.status_code, 308)
                 self.assertEqual(res["Location"], path + "/")
-        res = self.client.get("/api/v1/tasks?status=all&q=x")
-        self.assertEqual((res.status_code, res["Location"]), (308, "/api/v1/tasks/?status=all&q=x"))
+        res = self.client.get("/tasks?status=all&q=x")
+        self.assertEqual((res.status_code, res["Location"]), (308, "/tasks/?status=all&q=x"))
 
     def test_post_with_trailing_slash_is_unaffected(self):
         project = self.project()
@@ -226,7 +226,7 @@ class UnknownRouteAndSlashTests(Envelope, ApiTestCase):
 
     def test_following_the_308_performs_the_original_post(self):
         project = self.project()
-        res = self.client.post("/api/v1/tasks", {"title": "via308", "project_id": project.id,
+        res = self.client.post("/tasks", {"title": "via308", "project_id": project.id,
                                                   "owner_id": project.lead_id, "due_date": "2030-01-01"},
                                format="json", follow=True)
         self.assertEqual(res.status_code, 201)
@@ -234,7 +234,7 @@ class UnknownRouteAndSlashTests(Envelope, ApiTestCase):
 
     def test_not_found_for_real_endpoints_keeps_the_same_envelope(self):
         self.assert_envelope(self.get("/tasks/999999/"), 404)
-        self.assert_envelope(self.client.put("/api/v1/tasks/1/", {}, format="json"), 405)
+        self.assert_envelope(self.client.put("/tasks/1/", {}, format="json"), 405)
 
 
 class ProjectListDetailOptionTests(ApiTestCase):

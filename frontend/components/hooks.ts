@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useSyncExternalStore } from "react";
-import { getNow, subscribeStore, syncClock } from "@/lib/store";
+import { getNow, serverToday, subscribeStore, syncClock } from "@/lib/store";
 
 /* Wall clock in the SERVER's time zone (see lib/serverClock.ts), client only: null during SSR to avoid
    hydration mismatches. A module-level timer refreshes it every minute while any component uses it, and
@@ -72,4 +72,10 @@ export function useTheme(): [ThemePref, (t: ThemePref) => void] {
     window.dispatchEvent(new Event(THEME_EVENT));
   }, []);
   return [theme, setTheme];
+}
+
+/* The SERVER's calendar date (YYYY-MM-DD), client only (null during SSR). Follows the server's time zone and
+   re-renders when that date changes (the same minute timer as useNow). */
+export function useToday(): string | null {
+  return useSyncExternalStore(subscribeNow, serverToday, () => null);
 }

@@ -1,4 +1,7 @@
+from datetime import date
+
 from django.db import transaction
+from django.db.models import Q
 from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -7,19 +10,22 @@ from activity.models import ActivityLog
 from activity.services import log
 from activity.views import activity_page
 from config.exceptions import Conflict
-from config.params import parse_id
+from config.limits import LIST_DEFAULT_LIMIT as DEFAULT_LIMIT, LIST_MAX_LIMIT as MAX_LIMIT
+from config.params import OFFSET_MAX, parse_id, parse_int
 from tasks.models import Task
 from tasks.views import fmt_date, list_tasks_response
 
 from . import rules
-from .models import DEFAULT_ROLE, LEAD_ROLE, Phase, Project, ProjectMember, ProjectObjective
+from .models import DEFAULT_ROLE, LEAD_ROLE, DecisionRecord, Outcome, Phase, Project, ProjectMember, ProjectObjective
 from .serializers import (
+    DecisionResolveSerializer,
     DecisionSerializer,
     DecisionUndoSerializer,
     MembershipCreateSerializer,
     ObjectiveSerializer,
     ProjectCreateSerializer,
     ProjectUpdateSerializer,
+    decision_record_payload,
     project_payload,
     with_related,
 )
@@ -27,8 +33,12 @@ from .serializers import (
 HEALTH_VALUES = ("off-track", "watch", "on-track", "not-started")
 
 
-def get_project(pk, detail: bool = True) -> Project:
+def get_project(pk, detail: bool = True, lock: bool = False) -> Project:
+    """lock=True takes a row lock (inside a transaction) so concurrent resolve/undo requests on one project
+    run one after the other instead of both acting on the same stale decision."""
     try:
+        if lock:
+            return Project.objects.select_for_update().get(pk=pk)
         return with_related(Project.objects.all(), detail=detail).get(pk=pk)
     except Project.DoesNotExist:
         raise NotFound("Project not found.")
@@ -92,7 +102,7 @@ class ProjectDetailView(APIView):
 
     @transaction.atomic
     def patch(self, request, pk):
-        project = get_project(pk)
+        project = get_project(pk, lock=True)
         ser = ProjectUpdateSerializer(project, data=request.data, partial=True)
         ser.is_valid(raise_exception=True)
         data = ser.validated_data
@@ -130,7 +140,8 @@ class ProjectDetailView(APIView):
         for field, value in data.items():
             setattr(project, field, value)
         if events:
-            project.save()
+            # Only the fields in this request are written, so a concurrent edit of a different field is not undone.
+            project.save(update_fields=[*data.keys(), "updated_at"])
             if project.lead_id != old_lead.pk:
                 _set_lead_membership(project, project.lead, old_lead)
             for action, text in events:
@@ -277,24 +288,40 @@ class ProjectDecisionView(APIView):
 
 
 class ProjectDecisionResolveView(APIView):
+    """Record the manager's outcome on the pending decision; the decision then leaves the pending list."""
+
     @transaction.atomic
     def post(self, request, pk):
-        project = get_project(pk, detail=False)
+        project = get_project(pk, detail=False, lock=True)
+        ser = DecisionResolveSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        data = ser.validated_data
         if not project.decision:
             raise ValidationError({"decision": "There is no pending decision on this project."})
+        on = rules.today()
         text = project.decision
+        outcome, notes = data["outcome"], data["notes"]
+        description = f"You decided “{text}” on {project.name}: {outcome}" + (f" ({notes})" if notes else "")
         project.decision = ""
         project.save()
-        event = log(
-            "decision.resolved",
-            "project",
-            project.id,
-            f"You marked the decision on {project.name} as made: {text}",
+        event = log("decision.resolved", "project", project.id, description, project=project, decision=text)
+        record = DecisionRecord.objects.create(
             project=project,
-            decision=text,
+            title=text,
+            outcome=outcome,
+            notes=notes,
+            decision_date=data.get("decision_date") or on,
+            project_name=project.name,
+            lead_name=project.lead.name,
+            health=rules.health(project, on),
+            deadline=project.end_date,
+            context=f"{project.progress}% done with {rules.time_used(project, on)}% of the time used",
+            event=event,
         )
         payload = project_payload(get_project(pk), detail=True)
-        return Response({"project": payload, "activity_id": event.id})
+        return Response(
+            {"project": payload, "activity_id": event.id, "record": decision_record_payload(record)}, status=200
+        )
 
 
 class ProjectDecisionUndoView(APIView):
@@ -303,7 +330,7 @@ class ProjectDecisionUndoView(APIView):
 
     @transaction.atomic
     def post(self, request, pk):
-        project = get_project(pk, detail=False)
+        project = get_project(pk, detail=False, lock=True)
         ser = DecisionUndoSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         activity_id = ser.validated_data.get("activity_id")
@@ -319,5 +346,45 @@ class ProjectDecisionUndoView(APIView):
             raise Conflict("A new decision has already been entered on this project.")
         project.decision = event.details["decision"]
         project.save()
+        DecisionRecord.objects.filter(event=event).delete()
         event.delete()  # the resolution is withdrawn, so it leaves the history
         return Response({"project": project_payload(get_project(pk), detail=True)})
+
+
+def _parse_day(params, name):
+    raw = params.get(name)
+    if not raw:
+        return None
+    try:
+        return date.fromisoformat(raw)
+    except ValueError:
+        raise ValidationError({name: f"{name} must be a date (YYYY-MM-DD)."})
+
+
+class DecisionHistoryListView(APIView):
+    """Decisions the manager has recorded, newest decision first. Read-only: records are created by
+    resolving a pending decision and withdrawn by undoing it."""
+
+    def get(self, request):
+        params = request.query_params
+        qs = DecisionRecord.objects.all()
+        outcome = params.get("outcome", "all")
+        if outcome != "all":
+            if outcome not in Outcome.values:
+                raise ValidationError({"outcome": "outcome must be all, " + ", ".join(v.lower() for v in Outcome.values) + "."})
+            qs = qs.filter(outcome=outcome)
+        if project := params.get("project"):
+            qs = qs.filter(project_id=parse_id(project, "project"))
+        if lead := params.get("lead"):
+            qs = qs.filter(lead_name=lead)
+        if start := _parse_day(params, "from"):
+            qs = qs.filter(decision_date__gte=start)
+        if end := _parse_day(params, "to"):
+            qs = qs.filter(decision_date__lte=end)
+        if q := params.get("q", "").strip():
+            qs = qs.filter(Q(title__icontains=q) | Q(project_name__icontains=q) | Q(notes__icontains=q))
+        total = qs.count()
+        limit = parse_int(params.get("limit", DEFAULT_LIMIT), "limit", 1, MAX_LIMIT, f"limit must be between 1 and {MAX_LIMIT}.")
+        offset = parse_int(params.get("offset", 0), "offset", 0, OFFSET_MAX, "offset must be a whole number.")
+        rows = [decision_record_payload(r) for r in qs[offset : offset + limit]]
+        return Response({"results": rows, "count": total, "limit": limit, "offset": offset})

@@ -1,6 +1,6 @@
 // Centralised client for the Django REST backend. Every network call in the UI goes through here.
 
-export const API_BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000/api/v1").replace(/\/+$/, "");
+export const API_BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000").replace(/\/+$/, "");
 
 export class ApiError extends Error {
   status: number; // 0 = the server could not be reached
@@ -196,7 +196,61 @@ export interface ApiBrief {
   completed_tasks: { id: number; title: string }[];
 }
 
+export interface ApiFeedback {
+  id: number;
+  type: string;
+  content: string;
+  manager_name: string;
+  created_at: string;
+}
+
+export interface ApiDailyUpdate {
+  id: number;
+  employee: number;
+  employee_name: string;
+  project: number;
+  project_name: string;
+  date: string;
+  completed: string[];
+  in_progress: string[];
+  next_steps: string[];
+  blockers: string[];
+  notes: string;
+  status: string;
+  review_status: string;
+  shared_at: string;
+  feedback: ApiFeedback[];
+}
+
+export interface ApiDecisionRecord {
+  id: number;
+  project: number | null;
+  title: string;
+  outcome: string;
+  notes: string;
+  decision_date: string;
+  recorded_at: string;
+  project_name: string;
+  lead: string;
+  health: string;
+  deadline: string;
+  context: string;
+  activity_id: number | null;
+}
+
 /* ---------- Request bodies ---------- */
+
+export interface DecisionOutcomeInput {
+  outcome: string;
+  notes?: string;
+  decision_date: string;
+}
+
+export interface FeedbackInput {
+  type: string;
+  content: string;
+}
+
 
 export interface MemberInput {
   name: string;
@@ -272,7 +326,9 @@ export const api = {
     patch<ApiProject>(`/projects/${id}/objectives/${objectiveId}/`, { description }),
   deleteObjective: (id: number, objectiveId: number) => del(`/projects/${id}/objectives/${objectiveId}/`),
   setDecision: (id: number, decision: string) => patch<ApiProject>(`/projects/${id}/decision/`, { decision }),
-  resolveDecision: (id: number) => post<{ project: ApiProject; activity_id: number }>(`/projects/${id}/decision/resolve/`),
+  resolveDecision: (id: number, body: DecisionOutcomeInput) =>
+    post<{ project: ApiProject; activity_id: number; record: ApiDecisionRecord }>(`/projects/${id}/decision/resolve/`, body),
+  decisionHistory: (limit = 100, offset = 0) => get<PagedWindow<ApiDecisionRecord>>("/decision-history/", { limit, offset }),
   undoDecision: (id: number, activityId: number) =>
     post<{ project: ApiProject }>(`/projects/${id}/decision/undo/`, { activity_id: activityId }),
 
@@ -282,6 +338,12 @@ export const api = {
   updateTask: (id: number, body: TaskPatch) => patch<ApiTask>(`/tasks/${id}/`, body),
   completeTask: (id: number) => post<ApiTask>(`/tasks/${id}/complete/`),
   deleteTask: (id: number) => del(`/tasks/${id}/`),
+
+  // Daily updates (the manager reviews them; employees' updates arrive through POST /daily-updates/)
+  listDailyUpdates: (limit = 100, offset = 0) =>
+    get<PagedWindow<ApiDailyUpdate> & { new_count: number }>("/daily-updates/", { limit, offset }),
+  markUpdateReviewed: (id: number) => patch<ApiDailyUpdate>(`/daily-updates/${id}/`, { review_status: "reviewed" }),
+  addFeedback: (id: number, body: FeedbackInput) => post<ApiDailyUpdate>(`/daily-updates/${id}/feedback/`, body),
 
   // Activity
   listActivity: (limit = 50, offset = 0) => get<PagedWindow<ApiActivity>>("/activity/", { limit, offset }),

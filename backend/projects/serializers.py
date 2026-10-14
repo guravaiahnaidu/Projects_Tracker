@@ -6,7 +6,7 @@ from members.models import Member
 from tasks import rules as task_rules
 
 from . import rules
-from .models import DEFAULT_DEPARTMENT, DEFAULT_ROLE, Phase, Project
+from .models import DEFAULT_DEPARTMENT, DEFAULT_ROLE, DecisionRecord, Outcome, Phase, Project
 
 DEADLINE_MESSAGE = "The deadline must be after the start date."
 
@@ -91,6 +91,44 @@ class DecisionSerializer(serializers.Serializer):
 
     def validate_decision(self, value):
         return value.strip()
+
+
+DECISION_NOTES_MAX = 2000
+DATE_FUTURE_MESSAGE = "The decision date can't be in the future."
+
+
+class DecisionResolveSerializer(serializers.Serializer):
+    """Outcome of a pending decision. All fields optional so a bare resolve still works (Resolved, today)."""
+
+    outcome = serializers.ChoiceField(choices=Outcome.choices, required=False, default=Outcome.RESOLVED)
+    notes = serializers.CharField(required=False, allow_blank=True, default="", max_length=DECISION_NOTES_MAX)
+    decision_date = serializers.DateField(required=False)
+
+    def validate_notes(self, value):
+        return value.strip()
+
+    def validate_decision_date(self, value):
+        if value > rules.today():
+            raise serializers.ValidationError(DATE_FUTURE_MESSAGE)
+        return value
+
+
+def decision_record_payload(rec: DecisionRecord) -> dict:
+    return {
+        "id": rec.id,
+        "project": rec.project_id,
+        "title": rec.title,
+        "outcome": rec.outcome,
+        "notes": rec.notes,
+        "decision_date": rec.decision_date.isoformat(),
+        "recorded_at": rec.recorded_at,
+        "project_name": rec.project_name,
+        "lead": rec.lead_name,
+        "health": rec.health,
+        "deadline": rec.deadline.isoformat(),
+        "context": rec.context,
+        "activity_id": rec.event_id,
+    }
 
 
 class DecisionUndoSerializer(serializers.Serializer):

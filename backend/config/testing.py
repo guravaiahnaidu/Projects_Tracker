@@ -2,6 +2,7 @@
 
 from datetime import timedelta
 
+from django.core.cache import cache
 from django.utils import timezone
 from rest_framework.test import APITestCase
 
@@ -9,7 +10,7 @@ from members.models import Member
 from projects.models import LEAD_ROLE, Project, ProjectMember
 from tasks.models import Task
 
-API = "/api/v1"
+API = ""  # the API is served from the site root: /members/, /tasks/, ...
 
 
 def day(offset: int):
@@ -17,6 +18,10 @@ def day(offset: int):
 
 
 class ApiTestCase(APITestCase):
+    def _pre_setup(self):
+        super()._pre_setup()
+        cache.clear()  # throttle counters live in the cache; every test starts with a clean slate
+
     def member(self, name="Test Person", title="Engineer", department="Engineering", load=60):
         return Member.objects.create(name=name, title=title, department=department, load=load)
 

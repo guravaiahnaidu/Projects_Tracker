@@ -6,7 +6,7 @@ from django.db.models import Q
 
 from config.params import parse_id, parse_month
 
-from .models import State, Task
+from .models import Priority, State, Task
 from .rules import ALL_GROUPS
 
 
@@ -55,6 +55,8 @@ def filter_tasks(queryset, params, on: date):
             queryset = queryset.filter(**{field: parse_id(value, param)})
 
     if priority := params.get("priority"):
+        if priority not in Priority.values:
+            return queryset, "priority must be High, Medium or Low."
         queryset = queryset.filter(priority=priority)
 
     if group := params.get("group"):

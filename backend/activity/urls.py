@@ -2,4 +2,4 @@ from django.urls import path
 
 from .views import ActivityListView
 
-urlpatterns = [path("activity/", ActivityListView.as_view())]
+urlpatterns = [path("", ActivityListView.as_view())]

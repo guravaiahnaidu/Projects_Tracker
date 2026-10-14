@@ -15,9 +15,12 @@ def fmt_date(d) -> str:
     return f"{d.day} {d.strftime('%b %Y')}"
 
 
-def get_task(pk) -> Task:
+def get_task(pk, lock=False) -> Task:
+    qs = Task.objects.select_related("project", "owner")
+    if lock:
+        qs = qs.select_for_update(of=("self",))  # lock the task row only (no-op on SQLite)
     try:
-        return Task.objects.select_related("project", "owner").get(pk=pk)
+        return qs.get(pk=pk)
     except Task.DoesNotExist:
         raise NotFound("Task not found.")
 
@@ -50,7 +53,7 @@ class TaskDetailView(APIView):
 
     @transaction.atomic
     def patch(self, request, pk):
-        task = get_task(pk)
+        task = get_task(pk, lock=True)
         ser = TaskUpdateSerializer(task, data=request.data, partial=True)
         ser.is_valid(raise_exception=True)
         data = ser.validated_data
@@ -73,7 +76,8 @@ class TaskDetailView(APIView):
         for field, value in data.items():
             setattr(task, field, value)
         if changes:
-            task.save()
+            # Only the fields in this request are written, so a concurrent edit of a different field is not undone.
+            task.save(update_fields=[*data.keys(), "updated_at"])
             log(
                 "task.updated",
                 "task",

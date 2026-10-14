@@ -319,6 +319,7 @@ function ProjectDetail({
   const [dragProgress, setDragProgress] = useState<number | null>(null);
   const [decisionDraft, setDecisionDraft] = useState<string | null>(null);
   const committing = useRef(false);
+  const latestProgress = useRef<number | null>(null); // newest slider value, readable while a save is running
   const pid = numericId(p.id);
   const feed = useStore().histories[p.id];
   // The history is loaded lazily: only when this project's detail panel is open (first page, then "Load more").
@@ -348,10 +349,18 @@ function ProjectDetail({
     }
   };
 
+  // A further slider step made while a save is in flight is sent as soon as that save finishes, so no step is lost.
   const commitProgress = async () => {
-    if (dragProgress === null || committing.current) return;
+    if (committing.current || latestProgress.current === null) return;
     committing.current = true;
-    if (dragProgress !== p.done) await run(() => api.updateProject(pid, { progress: dragProgress }));
+    let sent = p.done;
+    let ok = true;
+    while (ok && latestProgress.current !== null && latestProgress.current !== sent) {
+      const value = latestProgress.current;
+      ok = await run(() => api.updateProject(pid, { progress: value }));
+      if (ok) sent = value;
+    }
+    latestProgress.current = null;
     setDragProgress(null);
     committing.current = false;
   };
@@ -453,7 +462,10 @@ function ProjectDetail({
             max={100}
             value={progress}
             aria-label="Progress"
-            onChange={(e) => setDragProgress(Number(e.target.value))}
+            onChange={(e) => {
+              latestProgress.current = Number(e.target.value);
+              setDragProgress(latestProgress.current);
+            }}
             onPointerUp={() => void commitProgress()}
             onKeyUp={() => void commitProgress()}
             className="mt-1 w-full accent-st-blue"

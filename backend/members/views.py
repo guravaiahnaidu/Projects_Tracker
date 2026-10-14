@@ -1,6 +1,6 @@
 from django.db import transaction
 from django.db.models import Q
-from rest_framework.exceptions import NotFound
+from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -14,9 +14,16 @@ from .models import Member
 from .serializers import MemberWriteSerializer, member_payload, with_stats
 
 
-def get_member(pk) -> Member:
+SHOW_VALUES = ("all", "stretched", "overdue", "blocked")
+SORT_VALUES = ("stretched", "name", "tasks")
+
+
+def get_member(pk, lock=False) -> Member:
+    qs = with_stats(Member.objects.all())
+    if lock:
+        qs = qs.select_for_update()  # no-op on SQLite
     try:
-        return with_stats(Member.objects.all()).get(pk=pk)
+        return qs.get(pk=pk)
     except Member.DoesNotExist:
         raise NotFound("Member not found.")
 
@@ -34,10 +41,15 @@ class MemberListView(APIView):
             ).distinct()
         if project := params.get("project"):
             qs = qs.filter(memberships__project_id=parse_id(project, "project"))
+        show = params.get("show", "all")
+        if show not in SHOW_VALUES:
+            raise ValidationError({"show": "show must be all, stretched, overdue or blocked."})
+        sort = params.get("sort", "stretched")
+        if sort not in SORT_VALUES:
+            raise ValidationError({"sort": "sort must be stretched, name or tasks."})
         on = today_fn()
         rows = [member_payload(m, on) for m in with_stats(qs)]
 
-        show = params.get("show", "all")
         if show == "stretched":
             rows = [r for r in rows if r["stretched"]]
         elif show == "overdue":
@@ -45,7 +57,6 @@ class MemberListView(APIView):
         elif show == "blocked":
             rows = [r for r in rows if r["blocked_tasks"] > 0]
 
-        sort = params.get("sort", "stretched")
         if sort == "name":
             rows.sort(key=lambda r: r["name"].lower())
         elif sort == "tasks":
@@ -89,16 +100,18 @@ class MemberDetailView(APIView):
 
     @transaction.atomic
     def patch(self, request, pk):
-        member = get_member(pk)
+        member = get_member(pk, lock=True)
         ser = MemberWriteSerializer(member, data=request.data, partial=True)
         ser.is_valid(raise_exception=True)
         changes = []
+        changed_fields = []
         for field in ("name", "title", "department", "load"):
             if field in ser.validated_data and ser.validated_data[field] != getattr(member, field):
                 changes.append(f"{field} {getattr(member, field)} -> {ser.validated_data[field]}")
                 setattr(member, field, ser.validated_data[field])
+                changed_fields.append(field)
         if changes:
-            member.save()
+            member.save(update_fields=[*changed_fields, "updated_at"])
             log("member.updated", "member", member.id, f"You updated {member.name}: {', '.join(changes)}")
         return Response(member_payload(get_member(pk)))
 
@@ -107,13 +120,16 @@ class MemberDetailView(APIView):
         member = get_member(pk)
         led = Project.objects.filter(lead=member).count()
         owned = member.tasks.count()
-        if led or owned:
+        updates = member.daily_updates.count()
+        if led or owned or updates:
             parts = []
             if led:
                 parts.append(f"leads {led} project{'' if led == 1 else 's'}")
             if owned:
                 parts.append(f"owns {owned} task{'' if owned == 1 else 's'}")
-            raise Conflict(f"{member.name} {' and '.join(parts)}. Reassign them before removing this person.")
+            if updates:
+                parts.append(f"has shared {updates} daily update{'' if updates == 1 else 's'}")
+            raise Conflict(f"{member.name} {' and '.join(parts)}. Reassign their work before removing this person.")
         name, member_id = member.name, member.id
         member.delete()
         log("member.deleted", "member", member_id, f"You removed {name} from the team")

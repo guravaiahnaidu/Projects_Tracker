@@ -364,11 +364,13 @@ function AddEmployeeForm({ onCreated, onCancel }: { onCreated: (name: string) =>
 export function TeamView({
   onOpen,
   initialShow = "all",
+  initialQuery = "",
 }: {
   onOpen: (ref: OpenRef) => void;
   initialShow?: Show; // pre-set the filter when arriving from the Overview
+  initialQuery?: string; // pre-fill the search when arriving from the navbar search
 }) {
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(initialQuery);
   const [project, setProject] = useState("all");
   const [show, setShow] = useState<Show>(initialShow);
   const [sort, setSort] = useState<Sort>("stretched");
