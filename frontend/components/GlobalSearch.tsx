@@ -86,12 +86,12 @@ function useResults(query: string): Result[] {
   };
 
   for (const p of projects)
-    if (has(p.name, p.department, p.lead, p.description))
+    if (has(p.name, p.client, p.department, p.lead, p.description))
       push({
         key: `p-${p.id}`,
         category: "Projects",
         label: p.name,
-        sub: `${p.department} · Lead ${p.lead} · ${statusText[projectStatus(p)]}`,
+        sub: `${p.department} · ${p.lead ? `Lead ${p.lead}` : "No lead"} · ${statusText[projectStatus(p)]}`,
         target: { kind: "project", id: p.id },
       });
 
@@ -102,7 +102,7 @@ function useResults(query: string): Result[] {
         key: `t-${t.id}`,
         category: "Tasks",
         label: t.title,
-        sub: `${project} · ${t.owner} · ${t.state === "done" ? "Done" : t.state === "blocked" ? "Blocked" : dueText(t)}`,
+        sub: `${project} · ${t.owner} · ${t.state === "done" ? "Completed" : t.state === "blocked" ? "Blocked" : dueText(t)}`,
         target: { kind: "task", id: t.id },
       });
   }
@@ -132,7 +132,7 @@ function useResults(query: string): Result[] {
         key: `d-${d.projectId}`,
         category: "Pending decisions",
         label: d.decision,
-        sub: `Waiting on you · ${d.name} · Lead ${d.lead}`,
+        sub: `Waiting on you · ${d.name} · ${d.lead ? `Lead ${d.lead}` : "No lead"}`,
         target: { kind: "pending", projectId: d.projectId },
       });
 

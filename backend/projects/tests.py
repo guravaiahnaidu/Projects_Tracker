@@ -63,22 +63,24 @@ class ProjectApiTests(ApiTestCase):
         res = self.post("/projects/", self.valid(self.member()))
         self.assertEqual((res.data["priority"], res.data["client"]), ("Medium", "Acme"))
 
-    def test_client_is_required_and_cannot_be_cleared(self):
+    def test_client_is_optional_and_can_be_cleared(self):
         lead = self.member()
-        for client in (None, "", "   "):
-            body = self.valid(lead)
+        for i, client in enumerate((None, "", "   ")):
+            body = self.valid(lead, name=f"No client {i}")
             if client is None:
                 del body["client"]
             else:
                 body["client"] = client
             res = self.post("/projects/", body)
-            self.assertEqual(res.status_code, 400, client)
-            self.assertEqual(res.data["error"]["fields"]["client"], ["Enter the client name."])
+            self.assertEqual(res.status_code, 201, client)
+            self.assertEqual(res.data["client"], "")
+        self.assertTrue(ActivityLog.objects.filter(description="You created No client 0").exists())
         project = self.project(name="P", client="Globex")
         res = self.patch(f"/projects/{project.id}/", {"client": " "})
-        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.status_code, 200)
         project.refresh_from_db()
-        self.assertEqual(project.client, "Globex")
+        self.assertEqual(project.client, "")
+        self.assertTrue(ActivityLog.objects.filter(description="You removed the client of P").exists())
 
     def test_create_with_status_priority_and_client(self):
         res = self.post(
@@ -289,7 +291,8 @@ class ProjectApiTests(ApiTestCase):
         self.assertEqual(self.delete(f"/projects/{project.id}/").status_code, 204)
         self.assertFalse(Project.objects.filter(pk=project.id).exists())
         self.assertFalse(ProjectMember.objects.filter(project_id=project.id).exists())
-        # history is preserved in the global feed
+        # its history is removed along with it
+        self.assertFalse(ActivityLog.objects.filter(project_id=project.id).exists())
         self.assertTrue(ActivityLog.objects.filter(description="You deleted the project Gone").exists())
         self.assertEqual(self.delete(f"/projects/{project.id}/").status_code, 404)
 
@@ -300,6 +303,39 @@ class ProjectApiTests(ApiTestCase):
         self.client.cookies.clear()
         self.assertEqual(self.get(f"/projects/{pid}/").data["progress"], 33)
         self.assertEqual(Project.objects.get(pk=pid).progress, 33)
+
+    def test_lead_and_dates_are_optional(self):
+        res = self.post("/projects/", {"name": "Bare"})
+        self.assertEqual(res.status_code, 201)
+        d = res.data
+        self.assertEqual((d["lead"], d["lead_name"], d["start_date"], d["end_date"]), (None, "", None, None))
+        self.assertEqual((d["start_offset"], d["end_offset"], d["time_used"], d["health"]), (None, None, 0, "not-started"))
+        self.assertEqual((d["phase"], d["member_count"]), ("Planning", 0))
+        pid = d["id"]
+        # Lists, sorting and the dashboard cope with a project that has none of them.
+        self.project(name="Dated")
+        for sort in ("attention", "deadline", "progress", "name"):
+            self.assertEqual(self.get("/projects/", sort=sort).status_code, 200, sort)
+        self.assertEqual([r["name"] for r in self.get("/projects/", sort="deadline").data["results"]], ["Dated", "Bare"])
+        for path in ("summary", "attention", "key-dates", "decisions"):
+            self.assertEqual(self.get(f"/dashboard/{path}/").status_code, 200, path)
+        # Add, then remove, a lead and dates.
+        lead = self.member(name="Lia")
+        self.patch(f"/projects/{pid}/", {"lead_id": lead.id, "start_date": day(-1).isoformat(), "end_date": day(9).isoformat()})
+        self.assertTrue(ProjectMember.objects.filter(project_id=pid, member=lead, role="Project Lead").exists())
+        res = self.patch(f"/projects/{pid}/", {"lead_id": None, "start_date": None, "end_date": None})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual((res.data["lead"], res.data["start_date"], res.data["end_date"]), (None, None, None))
+        self.assertEqual(ProjectMember.objects.get(project_id=pid, member=lead).role, "Team Member")
+        texts = set(ActivityLog.objects.filter(project_id=pid).values_list("description", flat=True))
+        self.assertTrue({"You made Lia the project lead of Bare", "You removed Lia as the project lead of Bare",
+                         "You removed the start date", "You removed the deadline"} <= texts)
+        # A decision on it is still recorded.
+        self.patch(f"/projects/{pid}/", {"decision": "Go?"})
+        res = self.post(f"/projects/{pid}/decision/resolve/", {"outcome": "Approved"})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual((res.data["record"]["lead"], res.data["record"]["deadline"]), ("", None))
+        self.assertEqual(self.get("/projects/", sort="deadline").status_code, 200)
 
 
 class DecisionHistoryApiTests(ApiTestCase):

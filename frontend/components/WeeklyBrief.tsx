@@ -94,7 +94,7 @@ function buildBrief(now: Date, b: Brief) {
       items: decisions.map((p) => ({
         key: `d-${p.projectId}`,
         lead: `${p.name}:`,
-        rest: `${p.decision}. Lead ${p.lead}, deadline ${fmtLong(dayFrom(now, p.endOffset))}.`,
+        rest: `${p.decision}. ${p.lead ? `Lead ${p.lead}` : "No lead"}, ${p.endOffset === null ? "no deadline" : `deadline ${fmtLong(dayFrom(now, p.endOffset))}`}.`,
         tone: "amber",
         ref: { kind: "project", id: p.projectId },
       })),

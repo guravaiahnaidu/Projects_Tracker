@@ -194,3 +194,75 @@ class DailyUpdateApiTests(ApiTestCase):
         self.assertEqual(self.get("/daily-updates/", limit=1001).status_code, 400)
         pages = [r["id"] for off in (0, 1, 2) for r in self.get("/daily-updates/", limit=1, offset=off).data["results"]]
         self.assertEqual(len(pages), len(set(pages)), "pages must not overlap")
+
+
+class TasksFeedDailyUpdatesTests(ApiTestCase):
+    def setUp(self):
+        self.proj = self.project(name="Payroll")
+        self.owner = self.proj.lead
+
+    def add_task(self, **extra):
+        body = {"title": "Reconcile payroll", "project_id": self.proj.id, "owner_id": self.owner.id, **extra}
+        res = self.post("/tasks/", body)
+        self.assertEqual(res.status_code, 201, res.data)
+        return res.data["id"]
+
+    def updates(self):
+        return self.get("/daily-updates/").data["results"]
+
+    def test_new_task_creates_daily_update_with_its_items(self):
+        self.add_task()
+        rows = self.updates()
+        self.assertEqual(len(rows), 1)
+        u = rows[0]
+        self.assertEqual((u["employee"], u["project"], u["date"]), (self.owner.id, self.proj.id, day(0).isoformat()))
+        self.assertTrue(u["from_tasks"])
+        self.assertEqual(u["next_steps"], ["Reconcile payroll"])  # not started yet
+        self.assertEqual(u["review_status"], "new")
+
+    def test_marking_done_moves_item_to_completed_and_reopens_review(self):
+        tid = self.add_task()
+        uid = self.updates()[0]["id"]
+        self.patch(f"/daily-updates/{uid}/", {"review_status": "reviewed"})
+        self.post(f"/tasks/{tid}/complete/", {})
+        u = self.updates()[0]
+        self.assertEqual((u["completed"], u["next_steps"]), (["Reconcile payroll"], []))
+        self.assertEqual(u["review_status"], "new", "a newly completed task is news for the manager")
+
+    def test_states_map_to_sections_and_blocked_sets_status(self):
+        self.add_task(title="A", state="done")
+        self.add_task(title="B", state="in-progress")
+        self.add_task(title="C", state="blocked", note="Waiting for bank file")
+        u = self.updates()[0]
+        self.assertEqual((u["completed"], u["in_progress"], u["blockers"]), (["A"], ["B"], ["C: Waiting for bank file"]))
+        self.assertEqual(u["status"], "Blocked")
+        self.assertEqual(len(u["tasks"]), 3)
+
+    def test_past_work_date_lands_on_that_day_and_moves_with_edits(self):
+        tid = self.add_task(work_date=day(-40).isoformat(), state="done")
+        self.assertEqual([u["date"] for u in self.updates()], [day(-40).isoformat()])
+        self.patch(f"/tasks/{tid}/", {"work_date": day(-35).isoformat()})
+        self.assertEqual([u["date"] for u in self.updates()], [day(-35).isoformat()], "the empty old-day update is removed")
+
+    def test_deleting_last_task_removes_auto_update_but_keeps_one_with_feedback(self):
+        tid = self.add_task()
+        self.delete(f"/tasks/{tid}/")
+        self.assertEqual(self.updates(), [])
+        tid = self.add_task()
+        uid = self.updates()[0]["id"]
+        self.post(f"/daily-updates/{uid}/feedback/", {"type": "Suggestion", "content": "Good work"})
+        self.delete(f"/tasks/{tid}/")
+        self.assertEqual([u["id"] for u in self.updates()], [uid], "manager feedback is never thrown away")
+
+    def test_shared_update_keeps_its_text_and_gains_task_items_without_duplicates(self):
+        shared = self.post(
+            "/daily-updates/",
+            {"employee_id": self.owner.id, "project_id": self.proj.id, "date": day(0).isoformat(), "completed": ["Reconcile payroll", "Call bank"]},
+        )
+        self.assertEqual(shared.status_code, 201, shared.data)
+        self.add_task(state="done")
+        self.add_task(title="File returns", state="done")
+        u = self.updates()[0]
+        self.assertFalse(u["from_tasks"])
+        self.assertEqual(u["completed"], ["Reconcile payroll", "Call bank", "File returns"])
+        self.assertEqual(DailyUpdate.objects.count(), 1)

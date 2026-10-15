@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import {
+  byDue,
   departments,
   PROJECT_PRIORITIES,
   projectStatus,
@@ -27,7 +28,7 @@ import { barColor, ConfirmDialog, Modal, ProgressBar, StatusBadge } from "./ui";
 
 /* ---------- Helpers ---------- */
 
-const PHASES: ProjectPhase[] = ["Planning", "Not Started", "In Progress", "At Risk", "On Hold", "Completed", "Cancelled"];
+const PHASES: ProjectPhase[] = ["Planning", "Not Started", "In Progress", "Under Testing", "At Risk", "On Hold", "No Updates", "Completed", "Cancelled"];
 
 const PRIORITY_TONE: Record<ProjectPriority, string> = {
   Low: "border-line text-muted",
@@ -44,8 +45,47 @@ function PriorityPill({ priority }: { priority: ProjectPriority }) {
   );
 }
 
+// Status cards above the list (same look as the Tasks & Deadlines cards); clicking one shows only those projects.
+const PHASE_CARDS: { value: ProjectPhase | "all"; label: string; sub: string; bar: string; text: string }[] = [
+  { value: "all", label: "All projects", sub: "Every status", bar: "bg-st-slate", text: "text-ink" },
+  { value: "In Progress", label: "In Progress", sub: "Work under way", bar: "bg-st-blue", text: "text-st-blue" },
+  { value: "Under Testing", label: "Under Testing", sub: "Being tested", bar: "bg-st-purple", text: "text-st-purple" },
+  { value: "On Hold", label: "On Hold", sub: "Paused for now", bar: "bg-st-amber", text: "text-st-amber-strong" },
+  { value: "No Updates", label: "No Updates", sub: "Waiting on news", bar: "bg-st-red", text: "text-st-red-strong" },
+  { value: "Completed", label: "Completed", sub: "Delivered", bar: "bg-st-green", text: "text-st-green" },
+];
+
+function PhaseCard({
+  card,
+  count,
+  active,
+  onClick,
+}: {
+  card: (typeof PHASE_CARDS)[number];
+  count: number;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      aria-pressed={active}
+      className={`flex flex-col overflow-hidden rounded-xl border bg-surface text-left shadow-sm card-hover ${
+        active ? "border-ink ring-2 ring-ink/15" : "border-line"
+      }`}
+    >
+      <div className={`h-1 ${card.bar}`} />
+      <div className="w-full px-3.5 pb-3.5 pt-3.5 xl:px-4">
+        <div className={`text-[1.75rem] font-bold leading-none ${card.text}`}>{count}</div>
+        <div className="mt-1.5 truncate text-[15px] font-semibold">{card.label}</div>
+        <div className="truncate text-[13px] text-muted">{card.sub}</div>
+      </div>
+    </button>
+  );
+}
+
 const STATUS_FILTERS: { value: ProjectStatus | "all"; label: string }[] = [
-  { value: "all", label: "All" },
+  { value: "all", label: "All health" },
   { value: "off-track", label: "Off track" },
   { value: "watch", label: "Needs watching" },
   { value: "on-track", label: "On track" },
@@ -63,10 +103,13 @@ const SORTS: { value: Sort; label: string }[] = [
 
 const attentionRank: ProjectStatus[] = ["off-track", "watch", "on-track", "not-started"];
 
+// Soonest deadline first; projects without one go last.
+const byDeadline = (a: Project, b: Project) => (a.endOffset ?? Infinity) - (b.endOffset ?? Infinity) || 0;
+
 const sorters: Record<Sort, (a: Project, b: Project) => number> = {
   attention: (a, b) =>
-    attentionRank.indexOf(projectStatus(a)) - attentionRank.indexOf(projectStatus(b)) || a.endOffset - b.endOffset,
-  deadline: (a, b) => a.endOffset - b.endOffset,
+    attentionRank.indexOf(projectStatus(a)) - attentionRank.indexOf(projectStatus(b)) || byDeadline(a, b),
+  deadline: (a, b) => byDeadline(a, b),
   progress: (a, b) => b.done - a.done,
   name: (a, b) => a.name.localeCompare(b.name),
 };
@@ -101,6 +144,7 @@ export function healthPoints(p: Project): string[] {
 function timeLeft(p: Project) {
   if (p.phase === "Completed" || p.phase === "Cancelled") return p.phase;
   const d = p.endOffset;
+  if (d === null) return "No deadline";
   if (d < 0) return `${plural(-d, "day")} past deadline`;
   if (d === 0) return "Due today";
   return plural(d, "day");
@@ -147,10 +191,11 @@ function ProjectCard({
         <StatusBadge status={status} />
       </div>
       <p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-sm text-muted">
+        <span className="inline-block rounded-full border border-line px-2 text-[12px] font-semibold leading-5 text-ink">{p.phase}</span>
         {p.priority !== "Medium" && <PriorityPill priority={p.priority} />}
         <span>
           {p.client && `${p.client} · `}
-          {p.department} · Lead {p.lead}
+          {p.department} · {p.lead ? `Lead ${p.lead}` : "No lead"}
         </span>
       </p>
       <div className="mt-2.5">
@@ -160,7 +205,7 @@ function ProjectCard({
         <span>
           {p.done}% done{status !== "not-started" && ` · ${used}% of time used`}
         </span>
-        <span suppressHydrationWarning>{now && `Due ${longDate(isoToLocalDate(p.endDate))}`}</span>
+        <span suppressHydrationWarning>{now && (p.endDate ? `Due ${longDate(isoToLocalDate(p.endDate))}` : "No deadline")}</span>
       </div>
     </button>
   );
@@ -168,8 +213,9 @@ function ProjectCard({
 
 function Timeline({ list, now, onSelect }: { list: Project[]; now: Date | null; onSelect: (id: string) => void }) {
   if (!now) return null;
-  const from = Math.min(0, ...list.map((p) => p.startOffset));
-  const to = Math.max(0, ...list.map((p) => p.endOffset));
+  // Projects without both dates have no bar; they are listed with a note instead.
+  const from = Math.min(0, ...list.flatMap((p) => (p.startOffset === null ? [] : [p.startOffset])));
+  const to = Math.max(0, ...list.flatMap((p) => (p.endOffset === null ? [] : [p.endOffset])));
   const first = addDays(now, from);
   const start = new Date(first.getFullYear(), first.getMonth(), 1);
   const lastDay = addDays(now, to);
@@ -198,8 +244,9 @@ function Timeline({ list, now, onSelect }: { list: Project[]; now: Date | null; 
           <ul>
             {list.map((p) => {
               const status = projectStatus(p);
-              const left = pos(addDays(now, p.startOffset));
-              const width = pos(addDays(now, p.endOffset)) - left;
+              const dated = p.startOffset !== null && p.endOffset !== null;
+              const left = dated ? pos(addDays(now, p.startOffset!)) : 0;
+              const width = dated ? pos(addDays(now, p.endOffset!)) - left : 0;
               return (
                 <li key={p.id}>
                   <button
@@ -208,19 +255,23 @@ function Timeline({ list, now, onSelect }: { list: Project[]; now: Date | null; 
                   >
                     <span className="pr-4">
                       <span className="block font-semibold">{p.name}</span>
-                      <span className="text-sm text-muted">{p.lead}</span>
+                      <span className="text-sm text-muted">{p.lead || "No lead"}</span>
                     </span>
                     <span className="relative block h-8">
                       {months.map((m) => (
                         <span key={m.getTime()} className="absolute inset-y-0 border-l border-line/60" style={{ left: `${pos(m)}%` }} />
                       ))}
-                      <span
-                        className="absolute top-1 h-6 overflow-hidden rounded-md bg-track"
-                        style={{ left: `${left}%`, width: `${width}%` }}
-                        title={`${p.done}% done`}
-                      >
-                        <span className={`block h-full ${barColor(status)}`} style={{ width: `${p.done}%` }} />
-                      </span>
+                      {dated ? (
+                        <span
+                          className="absolute top-1 h-6 overflow-hidden rounded-md bg-track"
+                          style={{ left: `${left}%`, width: `${width}%` }}
+                          title={`${p.done}% done`}
+                        >
+                          <span className={`block h-full ${barColor(status)}`} style={{ width: `${p.done}%` }} />
+                        </span>
+                      ) : (
+                        <span className="absolute left-2 top-1.5 text-sm text-muted">No dates set</span>
+                      )}
                       <span className="absolute -top-1 bottom-[-0.25rem] w-0.5 bg-ink" style={{ left: `${todayPos}%` }} />
                     </span>
                   </button>
@@ -235,7 +286,7 @@ function Timeline({ list, now, onSelect }: { list: Project[]; now: Date | null; 
   );
 }
 
-const NEW_PROJECT_STATUSES: ProjectPhase[] = ["Planning", "Not Started", "In Progress", "On Hold", "Completed", "Cancelled"];
+const NEW_PROJECT_STATUSES: ProjectPhase[] = ["Planning", "Not Started", "In Progress", "Under Testing", "On Hold", "No Updates", "Completed", "Cancelled"];
 const DESCRIPTION_MAX = 5000; // matches the backend's PROJECT_DESCRIPTION_MAX
 
 type NewProjectField = "name" | "client" | "department" | "lead" | "start" | "end" | "description";
@@ -301,15 +352,13 @@ function ProjectDialog({
 
   const problems: Partial<Record<NewProjectField, string>> = {
     name: !clean(name) ? "Enter a project name." : "",
-    client: !clean(client) ? "Enter the client name." : "",
-    department: !clean(department) ? "Select a department." : "",
-    lead: !lead ? "Select a project lead." : "",
-    start: startTyped ? "Enter the start date as dd-mm-yyyy." : !start ? "Select a start date." : "",
+    client: "", // optional
+    department: !clean(department) ? "Select a domain." : "",
+    lead: "", // optional
+    start: startTyped ? "Enter the start date as dd-mm-yyyy." : "", // optional
     end: endTyped
       ? "Enter the deadline as dd-mm-yyyy."
-      : !end
-        ? "Select a deadline."
-        : start && end <= start
+      : start && end && end <= start
           ? "The deadline must be after the start date."
           : "",
     description: description.length > DESCRIPTION_MAX ? `Keep the description under ${DESCRIPTION_MAX} characters.` : "",
@@ -337,8 +386,8 @@ function ProjectDialog({
         client: project.client,
         department: project.department,
         lead_id: leadIdOf(project),
-        start_date: project.startDate,
-        end_date: project.endDate,
+        start_date: project.startDate ?? "",
+        end_date: project.endDate ?? "",
         phase: project.phase,
         priority: project.priority,
         description: project.description,
@@ -384,22 +433,22 @@ function ProjectDialog({
       if (project) {
         // Only what changed is sent; the server applies it in one step and logs each change in the history.
         const patch = Object.fromEntries(
-          changed.map((k) => [k, k === "lead_id" ? Number(values.lead_id) : values[k]]),
+          changed.map((k) => [k, k === "lead_id" ? (values.lead_id ? Number(values.lead_id) : null) : (k === "start_date" || k === "end_date") ? values[k] || null : values[k]]),
         ) as ProjectPatch;
         await mutate(() => api.updateProject(numericId(project.id), patch), SCOPES.projectEdit);
         onSaved(project.id);
         return;
       }
-      // The server adds the lead to the team and writes the first history entry.
+      // The server adds the lead (if any) to the team and writes the first history entry.
       const created = await mutate(
         () =>
           api.createProject({
             name: clean(name),
             client: clean(client),
             department: clean(department),
-            lead_id: Number(lead),
-            start_date: start,
-            end_date: end,
+            lead_id: lead ? Number(lead) : null,
+            start_date: start || null,
+            end_date: end || null,
             phase: status,
             priority,
             description: description.trim(),
@@ -480,11 +529,6 @@ function ProjectDialog({
         <p className="text-sm text-muted">
           Fields marked <span className="text-st-red-strong">*</span> are required.
         </p>
-        {editing && !project.client && (
-          <p className="rounded-lg bg-st-amber/10 px-3 py-2 text-sm text-st-amber-strong">
-            This project was created before clients were recorded. Add the client to save your changes.
-          </p>
-        )}
 
         <div>
           <label htmlFor="np-name" className={label}>
@@ -515,7 +559,7 @@ function ProjectDialog({
 
         <div>
           <label htmlFor="np-client" className={label}>
-            Client{req}
+            Client <span className="font-normal text-muted">(optional)</span>
           </label>
           <input
             id="np-client"
@@ -527,7 +571,6 @@ function ProjectDialog({
               edited("client");
             }}
             onBlur={() => touch("client")}
-            aria-required
             aria-invalid={!!errorFor("client")}
             aria-describedby={errorFor("client") ? "np-client-error" : undefined}
             placeholder="Enter client name"
@@ -539,7 +582,7 @@ function ProjectDialog({
         <div className="grid gap-4 sm:grid-cols-2">
           <div>
             <label htmlFor="np-department" className={label}>
-              Department{req}
+              Domain{req}
             </label>
             <Combobox
               id="np-department"
@@ -549,7 +592,7 @@ function ProjectDialog({
                 edited("department");
               }}
               options={departmentOptions}
-              placeholder="Select department"
+              placeholder="Select or type a domain"
               allowCreate
               {...a11y("department")}
             />
@@ -557,7 +600,7 @@ function ProjectDialog({
           </div>
           <div>
             <label htmlFor="np-lead" className={label}>
-              Project Lead{req}
+              Project Lead <span className="font-normal text-muted">(optional)</span>
             </label>
             <Combobox
               id="np-lead"
@@ -568,6 +611,7 @@ function ProjectDialog({
               }}
               options={leadOptions}
               placeholder="Select employee"
+              clearable
               emptyText={team.length ? "No matching employee" : "Add employees in the Team tab first"}
               {...a11y("lead")}
             />
@@ -578,7 +622,7 @@ function ProjectDialog({
         <div className="grid gap-4 sm:grid-cols-2">
           <div>
             <label htmlFor="np-start" className={label}>
-              Start Date{req}
+              Start Date <span className="font-normal text-muted">(optional)</span>
             </label>
             <DateField
               id="np-start"
@@ -594,7 +638,7 @@ function ProjectDialog({
           </div>
           <div>
             <label htmlFor="np-end" className={label}>
-              Deadline{req}
+              Deadline <span className="font-normal text-muted">(optional)</span>
             </label>
             <DateField
               id="np-end"
@@ -750,7 +794,7 @@ function ProjectDetail({
   const live = progress === p.done ? p : { ...p, done: progress };
   const status = projectStatus(live);
   const used = timeUsed(live);
-  const openWork = tasks.filter((t) => t.projectId === p.id && t.state !== "done").sort((a, b) => a.dueOffset - b.dueOffset);
+  const openWork = tasks.filter((t) => t.projectId === p.id && t.state !== "done").sort(byDue);
   const memberToAdd = newMember || candidates[0]?.name || "";
 
   /** Send one change to the server, refetch, and show the server's message if it was refused. */
@@ -815,16 +859,8 @@ function ProjectDetail({
             </button>
           </div>
           <div className="mt-1.5 flex flex-wrap gap-1.5">
-            {p.client ? (
+            {p.client && (
               <span className="inline-block rounded-full bg-track/70 px-2.5 py-0.5 text-sm text-muted">Client: {p.client}</span>
-            ) : (
-              <button
-                type="button"
-                onClick={onEdit}
-                className="inline-block rounded-full border border-dashed border-st-amber px-2.5 py-0.5 text-sm text-st-amber-strong hover:bg-st-amber/10"
-              >
-                + Add client
-              </button>
             )}
             <span className="inline-block rounded-full bg-track/70 px-2.5 py-0.5 text-sm text-muted">{p.department}</span>
           </div>
@@ -875,10 +911,11 @@ function ProjectDetail({
             disabled={busy}
             onChange={(e) => {
               const next = e.target.value;
-              void run(() => api.updateProject(pid, { lead_id: memberId(next) }));
+              void run(() => api.updateProject(pid, { lead_id: next ? memberId(next) : null }));
             }}
             className={`${control} w-full`}
           >
+            <option value="">No lead</option>
             {team.map((m) => (
               <option key={m.name}>{m.name}</option>
             ))}
@@ -887,18 +924,18 @@ function ProjectDetail({
         <Tile label="Start date">
           <input
             type="date"
-            value={p.startDate}
-            max={addDaysIso(p.endDate, -1)}
-            onChange={(e) => e.target.value && void run(() => api.updateProject(pid, { start_date: e.target.value }))}
+            value={p.startDate ?? ""}
+            max={p.endDate ? addDaysIso(p.endDate, -1) : undefined}
+            onChange={(e) => void run(() => api.updateProject(pid, { start_date: e.target.value || null }))}
             className={`${control} w-full`}
           />
         </Tile>
         <Tile label="Deadline">
           <input
             type="date"
-            value={p.endDate}
-            min={addDaysIso(p.startDate, 1)}
-            onChange={(e) => e.target.value && void run(() => api.updateProject(pid, { end_date: e.target.value }))}
+            value={p.endDate ?? ""}
+            min={p.startDate ? addDaysIso(p.startDate, 1) : undefined}
+            onChange={(e) => void run(() => api.updateProject(pid, { end_date: e.target.value || null }))}
             className={`${control} w-full`}
           />
         </Tile>
@@ -1134,6 +1171,7 @@ export function ProjectsView({
   const [mode, setMode] = useState<"cards" | "timeline">("cards");
   const [sort, setSort] = useState<Sort>("attention");
   const [filter, setFilter] = useState<ProjectStatus | "all">("all");
+  const [phase, setPhase] = useState<ProjectPhase | "all">("all");
   const [selected, setSelected] = useState<string | null>(focusId);
   const [creating, setCreating] = useState(false);
   const [addingTask, setAddingTask] = useState(false);
@@ -1146,7 +1184,16 @@ export function ProjectsView({
     if (focusId && window.innerWidth < 1180) detailRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [focusId]);
 
-  const list = projects.filter((p) => filter === "all" || projectStatus(p) === filter).sort(sorters[sort]);
+  // Card counts follow the Health dropdown, so each card's number is exactly what clicking it shows.
+  const healthMatches = projects.filter((p) => filter === "all" || projectStatus(p) === filter);
+  const list = healthMatches.filter((p) => phase === "all" || p.phase === phase).sort(sorters[sort]);
+  const phaseCount = (s: ProjectPhase | "all") =>
+    s === "all" ? healthMatches.length : healthMatches.filter((p) => p.phase === s).length;
+  const filtered = filter !== "all" || phase !== "all";
+  const clearFilters = () => {
+    setFilter("all");
+    setPhase("all");
+  };
   const current = list.find((p) => p.id === selected) ?? list[0];
 
   const flash = (text: string) => {
@@ -1182,7 +1229,26 @@ export function ProjectsView({
             {plural(projects.length, "project")} across the company. Select one for the full picture.
           </p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <select value={sort} onChange={(e) => setSort(e.target.value as Sort)} aria-label="Sort" className={`${control} w-52`}>
+            {SORTS.map((s) => (
+              <option key={s.value} value={s.value}>
+                {s.label}
+              </option>
+            ))}
+          </select>
+          <select
+            value={filter}
+            onChange={(e) => setFilter(e.target.value as ProjectStatus | "all")}
+            aria-label="Health"
+            className={`${control} w-36`}
+          >
+            {STATUS_FILTERS.map((s) => (
+              <option key={s.value} value={s.value}>
+                {s.label}
+              </option>
+            ))}
+          </select>
           <div className="flex overflow-hidden rounded-lg border border-line" role="group" aria-label="View">
             {toggleBtn("cards", "Cards")}
             {toggleBtn("timeline", "Timeline")}
@@ -1196,27 +1262,26 @@ export function ProjectsView({
         </div>
       </div>
 
-      <div className="flex flex-wrap gap-3">
-        <select value={sort} onChange={(e) => setSort(e.target.value as Sort)} aria-label="Sort" className={`${control} w-52`}>
-          {SORTS.map((s) => (
-            <option key={s.value} value={s.value}>
-              {s.label}
-            </option>
-          ))}
-        </select>
-        <select
-          value={filter}
-          onChange={(e) => setFilter(e.target.value as ProjectStatus | "all")}
-          aria-label="Health"
-          className={`${control} w-32`}
-        >
-          {STATUS_FILTERS.map((s) => (
-            <option key={s.value} value={s.value}>
-              {s.label}
-            </option>
-          ))}
-        </select>
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 desk:grid-cols-6 xl:gap-4">
+        {PHASE_CARDS.map((c) => (
+          <PhaseCard
+            key={c.value}
+            card={c}
+            count={phaseCount(c.value)}
+            active={phase === c.value}
+            // Clicking the selected card again goes back to all projects.
+            onClick={() => setPhase(phase === c.value ? "all" : c.value)}
+          />
+        ))}
       </div>
+      {filtered && (
+        <p className="-mt-3 text-sm text-muted">
+          Showing {list.length} of {projects.length}
+          <button onClick={clearFilters} className="ml-2 font-semibold text-st-blue underline-offset-2 hover:underline">
+            Clear filters
+          </button>
+        </p>
+      )}
 
       {mode === "timeline" ? (
         <Timeline list={list} now={now} onSelect={select} />
@@ -1272,15 +1337,15 @@ export function ProjectsView({
           onClose={() => setCreating(false)}
           onSaved={(id) => {
             setCreating(false);
-            setFilter("all");
+            clearFilters(); // so the new project is visible
             setSelected(id);
             setMode("cards");
           }}
         />
       )}
       {addingTask && current && (
-        <Modal title={`New task for ${current.name}`} onClose={() => setAddingTask(false)}>
-          <NewTaskForm defaultProjectId={current.id} onCreated={() => setAddingTask(false)} />
+        <Modal title={`New task for ${current.name}`} onClose={() => setAddingTask(false)} wide>
+          <NewTaskForm defaultProjectId={current.id} onCreated={() => setAddingTask(false)} onCancel={() => setAddingTask(false)} />
         </Modal>
       )}
     </div>

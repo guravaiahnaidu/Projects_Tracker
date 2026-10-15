@@ -88,7 +88,7 @@ export function DecideForm({
         <div className="text-xs font-semibold uppercase tracking-wide text-muted">Decision</div>
         <div className="mt-0.5 text-[15px] font-semibold">{pending.decision}</div>
         <div className="mt-1 text-sm text-muted">
-          {pending.name} · Lead {pending.lead}
+          {pending.name} · {pending.lead ? `Lead ${pending.lead}` : "No lead"}
         </div>
       </div>
 
@@ -213,10 +213,10 @@ function DecisionPanel({ rec, onClose, onOpen }: { rec: DecisionRecord; onClose:
           <h3 className="text-[13px] font-semibold uppercase tracking-wide text-muted">Project at the time</h3>
           <dl className="mt-1 divide-y divide-line">
             {row("Project", rec.projectName)}
-            {row("Project lead", rec.lead)}
+            {row("Project lead", rec.lead || "No lead")}
             {row("Health", <StatusBadge status={rec.health} />)}
             {row("Progress", rec.context)}
-            {row("Deadline", fmtDay(rec.deadline))}
+            {row("Deadline", rec.deadline ? fmtDay(rec.deadline) : "No deadline")}
           </dl>
           {rec.projectId !== null ? (
             <button
@@ -265,7 +265,7 @@ export default function DecisionHistory({ onOpen, initialSelected }: { onOpen: (
   if (!now) return null;
 
   const projectsInHistory = Array.from(new Map(history.filter((r) => r.projectId !== null).map((r) => [r.projectId as string, r.projectName])).entries());
-  const leads = Array.from(new Set(history.map((r) => r.lead))).sort();
+  const leads = Array.from(new Set(history.map((r) => r.lead).filter(Boolean))).sort();
   const q = query.trim().toLowerCase();
   const rows = history.filter(
     (r) =>
@@ -363,7 +363,7 @@ export default function DecisionHistory({ onOpen, initialSelected }: { onOpen: (
                         {r.notes ? ` · ${r.notes}` : ""}
                       </span>
                     </span>
-                    <span className="hidden truncate text-sm text-muted lg:block">Lead {r.lead}</span>
+                    <span className="hidden truncate text-sm text-muted lg:block">{r.lead ? `Lead ${r.lead}` : "No lead"}</span>
                     <span className="sm:justify-self-end">
                       <OutcomeBadge outcome={r.outcome} />
                     </span>

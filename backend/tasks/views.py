@@ -5,6 +5,7 @@ from rest_framework.views import APIView
 
 from activity.services import log
 from projects.rules import today as today_fn
+from updates.tasklink import sync as sync_daily_update
 
 from .models import State, Task
 from .queries import filter_tasks, group_counts
@@ -12,7 +13,7 @@ from .serializers import TaskCreateSerializer, TaskUpdateSerializer, task_payloa
 
 
 def fmt_date(d) -> str:
-    return f"{d.day} {d.strftime('%b %Y')}"
+    return f"{d.day} {d.strftime('%b %Y')}" if d else "none"
 
 
 def get_task(pk, lock=False) -> Task:
@@ -44,6 +45,7 @@ class TaskListView(APIView):
         ser.is_valid(raise_exception=True)
         task = Task.objects.create(**ser.validated_data)
         log("task.created", "task", task.id, f"You added “{task.title}”", project=task.project)
+        sync_daily_update(task.owner_id, task.project_id, task.work_date)
         return Response(task_payload(get_task(task.pk)), status=201)
 
 
@@ -58,12 +60,16 @@ class TaskDetailView(APIView):
         ser.is_valid(raise_exception=True)
         data = ser.validated_data
         original_title = task.title
+        before = (task.owner_id, task.project_id, task.work_date)
+        state_before = task.state
         changes = []
 
         if "title" in data and data["title"] != task.title:
             changes.append(f"renamed to “{data['title']}”")
         if "owner" in data and data["owner"] != task.owner:
             changes.append(f"owner {task.owner.name} -> {data['owner'].name}")
+        if "work_date" in data and data["work_date"] != task.work_date:
+            changes.append(f"work date {fmt_date(task.work_date)} -> {fmt_date(data['work_date'])}")
         if "due_date" in data and data["due_date"] != task.due_date:
             changes.append(f"due {fmt_date(task.due_date)} -> {fmt_date(data['due_date'])}")
         if "priority" in data and data["priority"] != task.priority:
@@ -85,14 +91,21 @@ class TaskDetailView(APIView):
                 f"You updated “{original_title}”: {', '.join(changes)}",
                 project=task.project,
             )
+            # Keep Daily Work Updates in line: the old owner/day may lose this task, the new one gains it.
+            after = (task.owner_id, task.project_id, task.work_date)
+            if after != before:
+                sync_daily_update(*before, touched=False)
+            sync_daily_update(*after, touched=after != before or task.state != state_before)
         return Response(task_payload(get_task(pk)))
 
     @transaction.atomic
     def delete(self, request, pk):
         task = get_task(pk)
         title, task_id, project = task.title, task.id, task.project
-        task.delete()
+        key = (task.owner_id, task.project_id, task.work_date)
+        task.delete()  # its history is purged (activity.signals); one audit line replaces it
         log("task.deleted", "task", task_id, f"You deleted “{title}”", project=project)
+        sync_daily_update(*key, touched=False)
         return Response(status=204)
 
 
@@ -104,4 +117,5 @@ class TaskCompleteView(APIView):
             task.state = State.DONE
             task.save()
             log("task.completed", "task", task.id, f"You marked “{task.title}” as Done", project=task.project)
+            sync_daily_update(task.owner_id, task.project_id, task.work_date)
         return Response(task_payload(get_task(pk)))

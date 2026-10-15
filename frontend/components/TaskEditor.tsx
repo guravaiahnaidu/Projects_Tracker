@@ -1,18 +1,19 @@
 "use client";
 
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { projectById, tasks, team, type Priority, type TaskState } from "@/lib/data";
-import { api, errorMessage, type TaskPatch } from "@/lib/api";
+import { dateOffset, PRIORITIES, projectById, tasks, team, type Priority, type TaskState } from "@/lib/data";
+import { api, ApiError, errorMessage, type TaskPatch } from "@/lib/api";
 import { memberId, mutate, numericId, SCOPES } from "@/lib/store";
 import { useNow } from "./hooks";
-import { control, dueText, STATES } from "./TasksView";
+import { control, dueText, FieldNote, STATES, workDateProblem } from "./TasksView";
+import { DateField } from "./FormControls";
+import { ConfirmDialog } from "./ui";
 import { diffDays, wallClockIso } from "@/lib/serverClock";
-import { blockedNoteProblem } from "@/lib/blockedNote";
+import { BLOCKED_NOTE_TOO_LONG, blockedNoteProblem, NOTE_MAX_LENGTH } from "@/lib/blockedNote";
 
-const PRIORITIES: Priority[] = ["High", "Medium", "Low"];
-
-function dueTone(offset: number, state: TaskState) {
+function dueTone(offset: number | null, state: TaskState) {
   if (state === "done") return "text-st-green";
+  if (offset === null) return "text-muted";
   if (offset < 0) return "text-st-red-strong";
   if (offset === 0) return "text-st-orange-strong";
   if (offset <= 2) return "text-st-amber-strong";
@@ -37,7 +38,10 @@ export default function TaskEditor({
 
   const [title, setTitle] = useState(task?.title ?? "");
   const [owner, setOwner] = useState(task?.owner ?? "");
-  const [due, setDue] = useState(task?.dueDate ?? "");
+  const [workDate, setWorkDate] = useState(task?.workDate ?? "");
+  const [workTyped, setWorkTyped] = useState(false); // text entered but not a valid date
+  const [due, setDue] = useState(task?.dueDate ?? ""); // "" = no deadline
+  const [dueTyped, setDueTyped] = useState(false);
   const [priority, setPriority] = useState<Priority>(task?.priority ?? "Medium");
   const [state, setState] = useState<TaskState>(task?.state ?? "not-started");
   const [note, setNote] = useState(task?.note ?? "");
@@ -45,6 +49,7 @@ export default function TaskEditor({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [busy, setBusy] = useState(false);
   const [serverError, setServerError] = useState("");
+  const [serverFields, setServerFields] = useState<Record<string, string>>({});
   const titleRef = useRef<HTMLInputElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
 
@@ -61,23 +66,27 @@ export default function TaskEditor({
   if (!task || !project || !now) return null;
 
   // Dates are compared as ISO strings; the offset is only for the preview and is relative to the server's today.
-  const dueOffset = due ? diffDays(due, wallClockIso(now)) : task.dueOffset;
+  const dueOffset = due ? diffDays(due, wallClockIso(now)) : null;
   const dirty =
     title.trim() !== task.title ||
     owner !== task.owner ||
-    due !== task.dueDate ||
+    workDate !== task.workDate ||
+    (due || null) !== task.dueDate ||
+    workTyped ||
+    dueTyped ||
     priority !== task.priority ||
     state !== task.state ||
     note.trim() !== (task.note ?? "");
 
-  const problem = !title.trim()
-    ? "Give the task a name."
-    : !due
-      ? "Pick a due date."
-      : state === "blocked"
-        ? blockedNoteProblem(note)
-        : "";
-  const error = (attempted ? problem : "") || serverError;
+  // Field-level problems; shown after the first save attempt, next to their field.
+  const problems = {
+    title: !title.trim() ? "Give the task a name." : "",
+    work: workDateProblem(workDate, workTyped),
+    due: dueTyped ? "Enter the due date as dd-mm-yyyy, or leave it empty." : "",
+    note: state === "blocked" ? blockedNoteProblem(note) : note.trim().length > NOTE_MAX_LENGTH ? BLOCKED_NOTE_TOO_LONG : "",
+  };
+  const problem = problems.title || problems.work || problems.due || problems.note;
+  const fieldError = (f: keyof typeof problems, server: string) => serverFields[server] || (attempted ? problems[f] : "");
 
   // Project team first (with their role), then everyone else.
   const members = project.members.map((m) => ({ name: m.name, text: `${m.name} (${m.role})` }));
@@ -91,11 +100,14 @@ export default function TaskEditor({
   const run = async (write: () => Promise<unknown>) => {
     setBusy(true);
     setServerError("");
+    setServerFields({});
     try {
       await mutate(write, SCOPES.task);
       onClose();
     } catch (e) {
-      setServerError(errorMessage(e));
+      const fields = e instanceof ApiError ? e.fields : {};
+      setServerFields(Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, v[0]])));
+      setServerError(Object.keys(fields).length ? "Please fix the highlighted fields." : errorMessage(e));
       setBusy(false);
     }
   };
@@ -110,7 +122,8 @@ export default function TaskEditor({
       const patch: TaskPatch = {};
       if (title.trim() !== task.title) patch.title = title.trim();
       if (owner !== task.owner) patch.owner_id = memberId(owner);
-      if (due !== task.dueDate) patch.due_date = due;
+      if (workDate !== task.workDate) patch.work_date = workDate;
+      if ((due || null) !== task.dueDate) patch.due_date = due || null;
       if (priority !== task.priority) patch.priority = priority;
       if (state !== task.state) patch.state = state;
       if (note.trim() !== (task.note ?? "")) patch.note = note.trim();
@@ -148,8 +161,8 @@ export default function TaskEditor({
                 {project.name} →
               </button>
               <span aria-hidden>·</span>
-              <span className={`font-semibold ${dueTone(task.dueOffset, task.state)}`}>
-                {task.state === "done" ? "Done" : task.state === "blocked" ? "Blocked" : dueText(task)}
+              <span className={`font-semibold ${dueTone(dateOffset(task), task.state)}`}>
+                {task.state === "done" ? "Completed" : task.state === "blocked" ? "Blocked" : dueText(task)}
               </span>
             </p>
           </div>
@@ -168,8 +181,10 @@ export default function TaskEditor({
               ref={titleRef}
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              className={`${control} h-12! w-full text-base!`}
+              aria-invalid={!!fieldError("title", "title")}
+              className={`${control} h-12! w-full text-base! ${fieldError("title", "title") ? "border-st-red!" : ""}`}
             />
+            <FieldNote id="te-title-error" message={fieldError("title", "title")} />
           </div>
 
           <div className="grid gap-4 sm:grid-cols-2">
@@ -210,19 +225,55 @@ export default function TaskEditor({
             </div>
 
             <div>
-              <label htmlFor="te-due" className={label}>
-                Due date
+              <label htmlFor="te-work" className={label}>
+                Work date <span className="text-st-red-strong">*</span>
               </label>
-              <input
-                id="te-due"
-                type="date"
-                value={due}
-                onChange={(e) => setDue(e.target.value)}
-                className={`${control} w-full`}
+              <DateField
+                id="te-work"
+                value={workDate}
+                invalid={!!fieldError("work", "work_date")}
+                onChange={(iso, typed) => {
+                  setWorkDate(iso);
+                  setWorkTyped(typed);
+                }}
               />
-              <p className={`mt-1 text-sm font-medium ${dueTone(dueOffset, state)}`}>
-                {state === "done" ? "Completed" : dueText(previewTask)}
-              </p>
+              <FieldNote id="te-work-error" message={fieldError("work", "work_date")} />
+            </div>
+            <div>
+              <label htmlFor="te-due" className={label}>
+                Due date <span className="font-normal">(optional)</span>
+              </label>
+              <div className="flex items-center gap-2">
+                <div className="min-w-0 flex-1">
+                  <DateField
+                    id="te-due"
+                    value={due}
+                    invalid={!!fieldError("due", "due_date")}
+                    onChange={(iso, typed) => {
+                      setDue(iso);
+                      setDueTyped(typed);
+                    }}
+                  />
+                </div>
+                {due && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDue("");
+                      setDueTyped(false);
+                    }}
+                    className="shrink-0 rounded-md px-2 py-1 text-sm text-muted hover:bg-track hover:text-ink"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+              <FieldNote id="te-due-error" message={fieldError("due", "due_date")} />
+              {!fieldError("due", "due_date") && (
+                <p className={`mt-1 text-sm font-medium ${dueTone(dueOffset, state)}`}>
+                  {state === "done" ? "Completed" : due ? dueText(previewTask) : "No due date"}
+                </p>
+              )}
             </div>
             <div>
               <label htmlFor="te-priority" className={label}>
@@ -239,65 +290,53 @@ export default function TaskEditor({
                 ))}
               </select>
             </div>
-          </div>
-
-          <div>
-            <label htmlFor="te-status" className={label}>
-              Status
-            </label>
-            <select
-              id="te-status"
-              value={state}
-              onChange={(e) => setState(e.target.value as TaskState)}
-              className={`${control} w-full`}
-            >
-              {STATES.map((s) => (
-                <option key={s.value} value={s.value}>
-                  {s.label}
-                </option>
-              ))}
-            </select>
+            <div>
+              <label htmlFor="te-status" className={label}>
+                Status
+              </label>
+              <select
+                id="te-status"
+                value={state}
+                onChange={(e) => setState(e.target.value as TaskState)}
+                className={`${control} w-full`}
+              >
+                {STATES.map((s) => (
+                  <option key={s.value} value={s.value}>
+                    {s.label}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
 
           <div>
             <label htmlFor="te-note" className={label}>
-              {state === "blocked" ? "What is it waiting on?" : "Notes"}
+              {state === "blocked" ? "What is it waiting on?" : "Description / Work notes"}
               {state === "blocked" && <span className="ml-1 text-st-red-strong">*</span>}
             </label>
             <textarea
               id="te-note"
-              rows={state === "blocked" ? 3 : 2}
+              rows={3}
               value={note}
               onChange={(e) => setNote(e.target.value)}
-              placeholder={state === "blocked" ? "e.g. Waiting for the vendor to resend the export file" : "Optional context for the team"}
-              className="w-full rounded-lg border border-line bg-surface px-3.5 py-2 text-[15px] outline-none placeholder:text-muted focus:border-st-blue focus:ring-2 focus:ring-st-blue/20"
+              placeholder={state === "blocked" ? "e.g. Waiting for the vendor to resend the export file" : "Work performed, outcomes and any blockers..."}
+              aria-invalid={!!fieldError("note", "note")}
+              className={`w-full rounded-lg border border-line bg-surface px-3.5 py-2 text-[15px] outline-none placeholder:text-muted focus:border-st-blue focus:ring-2 focus:ring-st-blue/20 ${
+                fieldError("note", "note") ? "border-st-red!" : ""
+              }`}
             />
+            <FieldNote id="te-note-error" message={fieldError("note", "note")} />
           </div>
 
-          {error && (
+          {serverError && (
             <p role="alert" className="rounded-lg bg-st-red/8 px-3 py-2 text-sm font-medium text-st-red-strong">
-              {error}
+              {serverError}
             </p>
           )}
         </div>
 
         <footer className="flex flex-wrap items-center gap-2 border-t border-line px-6 py-3.5">
-          {confirmDelete ? (
-            <span className="mr-auto flex flex-wrap items-center gap-2 text-sm">
-              <span className="font-medium">Delete this task?</span>
-              <button
-                type="button"
-                onClick={remove}
-                disabled={busy}
-                className="rounded-lg bg-st-red px-3 py-1.5 font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                Yes, delete
-              </button>
-              <button type="button" onClick={() => setConfirmDelete(false)} className="rounded-lg px-2 py-1.5 font-medium hover:bg-track">
-                Keep it
-              </button>
-            </span>
-          ) : (
+          {
             <span className="mr-auto flex gap-2">
               {task.state !== "done" && (
                 <button type="button" onClick={markDone} disabled={busy} className={`${btn} text-st-green disabled:cursor-not-allowed disabled:opacity-60`}>
@@ -312,7 +351,7 @@ export default function TaskEditor({
                 Delete
               </button>
             </span>
-          )}
+          }
           <button type="button" onClick={onClose} className={btn}>
             Cancel
           </button>
@@ -325,6 +364,22 @@ export default function TaskEditor({
             {busy ? "Saving..." : "Save changes"}
           </button>
         </footer>
+        {confirmDelete && (
+          <ConfirmDialog
+            title="Delete task?"
+            message={
+              <p>
+                <b className="text-ink">{task.title}</b> will be permanently deleted. This cannot be undone.
+              </p>
+            }
+            confirmLabel="Delete task"
+            busyLabel="Deleting..."
+            busy={busy}
+            error={serverError}
+            onConfirm={remove}
+            onCancel={() => setConfirmDelete(false)}
+          />
+        )}
       </form>
     </div>
   );

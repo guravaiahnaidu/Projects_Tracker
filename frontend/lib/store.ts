@@ -114,14 +114,14 @@ export function mapProject(p: ApiProject, today: string = serverToday()): Projec
     name: p.name,
     department: p.department,
     client: p.client ?? "",
-    lead: p.lead_name,
+    lead: p.lead_name ?? "",
     phase: p.phase as ProjectPhase,
     priority: (p.priority ?? "Medium") as ProjectPriority,
     description: p.description,
     startDate: p.start_date,
     endDate: p.end_date,
-    startOffset: diffDays(p.start_date, today),
-    endOffset: diffDays(p.end_date, today),
+    startOffset: p.start_date ? diffDays(p.start_date, today) : null,
+    endOffset: p.end_date ? diffDays(p.end_date, today) : null,
     done: p.progress,
     decision: p.decision || undefined,
     objectives: (p.objectives ?? []).map((o) => o.description),
@@ -135,8 +135,10 @@ export const mapTask = (t: ApiTask, today: string = serverToday()): Task => ({
   title: t.title,
   owner: t.owner_name,
   projectId: String(t.project),
+  workDate: t.work_date,
   dueDate: t.due_date,
-  dueOffset: diffDays(t.due_date, today),
+  dueOffset: t.due_date ? diffDays(t.due_date, today) : null,
+  workOffset: diffDays(t.work_date, today),
   state: t.state as TaskState,
   priority: t.priority as Priority,
   note: t.note || undefined,
@@ -223,6 +225,8 @@ export const mapDailyUpdate = (u: ApiDailyUpdate): DailyUpdate => ({
   status: u.status as OverallStatus,
   sharedAt: u.shared_at,
   reviewStatus: u.review_status as ReviewStatus,
+  fromTasks: !!u.from_tasks,
+  taskCount: u.tasks?.length ?? 0,
   feedback: u.feedback.map(
     (f): Feedback => ({
       id: String(f.id),
@@ -461,10 +465,13 @@ async function fetchGroups(groups: ReadonlySet<RefreshGroup>): Promise<Fetched> 
 /** Offsets are days from the server's today; recompute them in place from the stored ISO dates. */
 function recomputeOffsets(today: string) {
   for (const p of projects) {
-    p.startOffset = diffDays(p.startDate, today);
-    p.endOffset = diffDays(p.endDate, today);
+    p.startOffset = p.startDate ? diffDays(p.startDate, today) : null;
+    p.endOffset = p.endDate ? diffDays(p.endDate, today) : null;
   }
-  for (const t of tasks) t.dueOffset = diffDays(t.dueDate, today);
+  for (const t of tasks) {
+    t.dueOffset = t.dueDate ? diffDays(t.dueDate, today) : null;
+    t.workOffset = diffDays(t.workDate, today);
+  }
 }
 
 function attachHistories() {
@@ -566,7 +573,8 @@ export function ensureLoaded() {
  * Which resource groups each kind of write refetches (see `mutate`). Chosen conservatively: when in doubt a
  * group is included, because the UI must never show stale data after a change.
  *  - task: create/update/complete/delete change the task list, the open-work lists embedded in projects,
- *    the activity log (and project histories) and every dashboard figure (summary, attention, workload).
+ *    the activity log (and project histories), every dashboard figure (summary, attention, workload) and the
+ *    Daily Work Updates built from tasks.
  *  - projectEdit: phase/lead/dates/progress change the project, its history and the dashboard figures.
  *  - decision: set/resolve/undo change the project's decision, activity (undo deletes an event), the
  *    decisions/attention figures and the decision history (resolve adds a record, undo removes it).
@@ -578,7 +586,7 @@ export function ensureLoaded() {
  *    because tasks, daily updates and decisions all show people by name.
  */
 export const SCOPES = {
-  task: ["tasks", "projects", "activity", "dashboard"],
+  task: ["tasks", "projects", "activity", "dashboard", "dailyUpdates"], // tasks feed Daily Work Updates
   projectEdit: ["projects", "activity", "dashboard"],
   decision: ["projects", "activity", "dashboard", "decisionHistory"],
   review: ["dailyUpdates"],

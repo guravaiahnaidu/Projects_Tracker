@@ -9,7 +9,6 @@ from . import rules
 from .models import DEFAULT_DEPARTMENT, DEFAULT_ROLE, DecisionRecord, Outcome, Phase, Priority, Project
 
 DEADLINE_MESSAGE = "The deadline must be after the start date."
-CLIENT_MESSAGE = "Enter the client name."
 PHASE_MESSAGE = "Status must be one of: " + ", ".join(Phase.values) + "."
 PRIORITY_MESSAGE = "Priority must be one of: " + ", ".join(Priority.values) + "."
 
@@ -23,15 +22,14 @@ class ProjectCreateSerializer(serializers.Serializer):
         max_length=200, error_messages={"blank": "Enter a project name.", "required": "Enter a project name."}
     )
     department = serializers.CharField(max_length=120, required=False, allow_blank=True, default="")
-    client = serializers.CharField(
-        max_length=120, error_messages={"blank": CLIENT_MESSAGE, "required": CLIENT_MESSAGE}
-    )
+    client = serializers.CharField(max_length=120, required=False, allow_blank=True, default="")  # "" = no client
     lead_id = serializers.PrimaryKeyRelatedField(
-        queryset=Member.objects.all(), source="lead", error_messages={"does_not_exist": "Choose a project lead from the team."}
+        queryset=Member.objects.all(), source="lead", required=False, allow_null=True, default=None,
+        error_messages={"does_not_exist": "Choose a project lead from the team."},
     )
-    start_date = serializers.DateField()
-    end_date = serializers.DateField()
-    # Omitted phase: derived from the start date (Not Started / In Progress), as before.
+    start_date = serializers.DateField(required=False, allow_null=True, default=None)
+    end_date = serializers.DateField(required=False, allow_null=True, default=None)
+    # Omitted phase: derived from the start date (Not Started / In Progress; Planning when there is none).
     phase = serializers.ChoiceField(
         choices=Phase.choices, required=False, error_messages={"invalid_choice": PHASE_MESSAGE}
     )
@@ -52,16 +50,14 @@ class ProjectCreateSerializer(serializers.Serializer):
         return _clean(value) or DEFAULT_DEPARTMENT
 
     def validate_client(self, value):
-        value = _clean(value)
-        if not value:
-            raise serializers.ValidationError(CLIENT_MESSAGE)
-        return value
+        return _clean(value)
 
     def validate_description(self, value):
         return value.strip()
 
     def validate(self, attrs):
-        if attrs["end_date"] <= attrs["start_date"]:
+        start, end = attrs["start_date"], attrs["end_date"]
+        if start and end and end <= start:
             raise serializers.ValidationError({"end_date": DEADLINE_MESSAGE})
         return attrs
 
@@ -69,15 +65,15 @@ class ProjectCreateSerializer(serializers.Serializer):
 class ProjectUpdateSerializer(serializers.Serializer):
     name = serializers.CharField(max_length=200, required=False)
     department = serializers.CharField(max_length=120, required=False)
-    client = serializers.CharField(max_length=120, required=False, error_messages={"blank": CLIENT_MESSAGE})
+    client = serializers.CharField(max_length=120, required=False, allow_blank=True)
     description = serializers.CharField(required=False, allow_blank=True, max_length=PROJECT_DESCRIPTION_MAX)
     phase = serializers.ChoiceField(choices=Phase.choices, required=False, error_messages={"invalid_choice": PHASE_MESSAGE})
     priority = serializers.ChoiceField(
         choices=Priority.choices, required=False, error_messages={"invalid_choice": PRIORITY_MESSAGE}
     )
-    lead_id = serializers.PrimaryKeyRelatedField(queryset=Member.objects.all(), source="lead", required=False)
-    start_date = serializers.DateField(required=False)
-    end_date = serializers.DateField(required=False)
+    lead_id = serializers.PrimaryKeyRelatedField(queryset=Member.objects.all(), source="lead", required=False, allow_null=True)
+    start_date = serializers.DateField(required=False, allow_null=True)
+    end_date = serializers.DateField(required=False, allow_null=True)
     progress = serializers.IntegerField(
         required=False,
         min_value=0,
@@ -96,10 +92,7 @@ class ProjectUpdateSerializer(serializers.Serializer):
         return _clean(value) or DEFAULT_DEPARTMENT
 
     def validate_client(self, value):
-        value = _clean(value)
-        if not value:
-            raise serializers.ValidationError(CLIENT_MESSAGE)
-        return value
+        return _clean(value)
 
     def validate_description(self, value):
         return value.strip()
@@ -110,7 +103,7 @@ class ProjectUpdateSerializer(serializers.Serializer):
     def validate(self, attrs):
         start = attrs.get("start_date", self.instance.start_date)
         end = attrs.get("end_date", self.instance.end_date)
-        if end <= start:
+        if start and end and end <= start:
             raise serializers.ValidationError({"end_date": DEADLINE_MESSAGE})
         return attrs
 
@@ -154,7 +147,7 @@ def decision_record_payload(rec: DecisionRecord) -> dict:
         "project_name": rec.project_name,
         "lead": rec.lead_name,
         "health": rec.health,
-        "deadline": rec.deadline.isoformat(),
+        "deadline": rec.deadline.isoformat() if rec.deadline else None,
         "context": rec.context,
         "activity_id": rec.event_id,
     }
@@ -196,12 +189,12 @@ def project_payload(project: Project, on=None, detail: bool = False) -> dict:
         "department": project.department,
         "client": project.client,
         "lead": project.lead_id,
-        "lead_name": project.lead.name,
+        "lead_name": project.lead.name if project.lead else "",
         "phase": project.phase,
         "priority": project.priority,
         "description": project.description,
-        "start_date": project.start_date.isoformat(),
-        "end_date": project.end_date.isoformat(),
+        "start_date": project.start_date.isoformat() if project.start_date else None,
+        "end_date": project.end_date.isoformat() if project.end_date else None,
         "start_offset": rules.start_offset(project, on),
         "end_offset": rules.end_offset(project, on),
         "progress": project.progress,
@@ -214,7 +207,7 @@ def project_payload(project: Project, on=None, detail: bool = False) -> dict:
     }
     if detail:
         open_tasks = sorted(
-            (t for t in project.tasks.all() if t.state != "done"), key=lambda t: (t.due_date, t.id)
+            (t for t in project.tasks.all() if t.state != "done"), key=task_rules.sort_key
         )
         data["objectives"] = [
             {"id": o.id, "description": o.description} for o in project.objectives.all()
@@ -229,7 +222,8 @@ def project_payload(project: Project, on=None, detail: bool = False) -> dict:
                 "title": t.title,
                 "owner": t.owner_id,
                 "owner_name": t.owner.name,
-                "due_date": t.due_date.isoformat(),
+                "work_date": t.work_date.isoformat(),
+                "due_date": t.due_date.isoformat() if t.due_date else None,
                 "due_offset": task_rules.due_offset(t, on),
                 "state": t.state,
                 "priority": t.priority,

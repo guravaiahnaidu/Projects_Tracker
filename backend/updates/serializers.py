@@ -76,8 +76,13 @@ class FeedbackSerializer(serializers.Serializer):
         return value
 
 
-def update_payload(u: DailyUpdate) -> dict:
-    """Expects employee, project and feedback prefetched."""
+def update_payload(u: DailyUpdate, tasks: list | None = None) -> dict:
+    """Expects employee, project and feedback prefetched. `tasks`: this update's tasks (looked up when omitted)."""
+    from .tasklink import task_fields, tasks_by_key
+
+    if tasks is None:
+        tasks = tasks_by_key([u]).get((u.employee_id, u.project_id, u.date), [])
+    merged = task_fields(u, tasks)
     return {
         "id": u.id,
         "employee": u.employee_id,
@@ -85,12 +90,14 @@ def update_payload(u: DailyUpdate) -> dict:
         "project": u.project_id,
         "project_name": u.project.name,
         "date": u.date.isoformat(),
-        "completed": u.completed,
-        "in_progress": u.in_progress,
-        "next_steps": u.next_steps,
-        "blockers": u.blockers,
+        "completed": merged["completed"],
+        "in_progress": merged["in_progress"],
+        "next_steps": merged["next_steps"],
+        "blockers": merged["blockers"],
         "notes": u.notes,
-        "status": u.status,
+        "status": merged["status"],
+        "from_tasks": u.from_tasks,
+        "tasks": merged["tasks"],
         "review_status": u.review_status,
         "shared_at": u.shared_at,
         "feedback": [

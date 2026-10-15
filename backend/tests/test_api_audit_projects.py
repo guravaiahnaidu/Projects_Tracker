@@ -50,8 +50,9 @@ class ProjectAudit(AuditCase):
 
         self.probe("POST", L, "valid", "creates, lead membership, activity, persisted", create)
         self.probe("POST", L, "valid", "future start -> Not Started", lambda: self.assertEqual(self.post(L, self.body(name="Later", start_date=day(3).isoformat())).data["phase"], "Not Started") or 201)
-        for field in ("name", "client", "lead_id", "start_date", "end_date"):
-            self.bad("POST", L, L, {k: v for k, v in self.body().items() if k != field}, name=f"missing {field}")
+        self.bad("POST", L, L, {k: v for k, v in self.body().items() if k != "name"}, name="missing name")
+        for field in ("lead_id", "start_date", "end_date"):  # optional
+            self.probe("POST", L, "valid", f"missing {field} -> 201", lambda field=field: self.expect(self.post(L, {k: v for k, v in self.body(name=f"No {field}").items() if k != field}), 201))
         for extra in ({"name": " "}, {"name": "x" * 201}, {"lead_id": 999999}, {"lead_id": "abc"}, {"start_date": "31-12-2026"}, {"end_date": day(-5).isoformat()}, {"end_date": day(-9).isoformat()}, {"description": "d" * 5001}, {"department": "d" * 121}):
             self.bad("POST", L, L, self.body(**extra))
 
@@ -109,7 +110,8 @@ class ProjectAudit(AuditCase):
             self.assertFalse(Project.objects.filter(pk=p.id).exists())
             self.assertFalse(ProjectObjective.objects.filter(project_id=p.id).exists(), "objective orphaned")
             self.assertFalse(ProjectMember.objects.filter(project_id=p.id).exists(), "membership orphaned")
-            self.assertTrue(ActivityLog.objects.filter(action="project.deleted").exists())
+            self.assertFalse(ActivityLog.objects.filter(project_id=p.id).exists(), "history orphaned")
+            self.assertTrue(ActivityLog.objects.filter(action="project.deleted", entity_id=p.id).exists())
             self.assertEqual(self.delete(f"/projects/{p.id}/").status_code, 404)
             return "204 then 404"
 

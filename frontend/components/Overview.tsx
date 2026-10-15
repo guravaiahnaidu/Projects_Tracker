@@ -204,7 +204,7 @@ function KeyDates({ now, onOpen }: { now: Date | null; onOpen: (ref: OpenRef) =>
               </span>
               <span>
                 <span className="block text-[15px] font-medium">{k.title}</span>
-                <span className="block text-sm text-muted">Lead: {k.lead}</span>
+                <span className="block text-sm text-muted">{k.lead ? `Lead: ${k.lead}` : "No lead"}</span>
               </span>
               <span className="whitespace-nowrap text-sm font-semibold">{inDays(k.offset)}</span>
             </button>
@@ -344,7 +344,7 @@ function DecisionsCard({ now, onOpen }: { now: Date | null; onOpen: (ref: OpenRe
                     <StatusBadge status={status} />
                   </span>
                   <span suppressHydrationWarning>
-                    Lead {p.lead} · deadline {deadlinePhrase(now, p.endOffset)}
+                    {p.lead ? `Lead ${p.lead}` : "No lead"} · {p.endOffset === null ? "no deadline" : `deadline ${deadlinePhrase(now, p.endOffset)}`}
                   </span>
                 </div>
               </div>

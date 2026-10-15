@@ -62,7 +62,7 @@ class TaskApiTests(ApiTestCase):
         self.assertEqual(res.status_code, 400)
         fields = res.data["error"]["fields"]
         self.assertEqual(fields["title"], ["Give the task a name."])
-        self.assertEqual(fields["due_date"], ["Pick a due date."])
+        self.assertNotIn("due_date", fields)  # the deadline is optional
         for key, value in [("project_id", 9999), ("owner_id", 9999), ("priority", "Urgent"), ("state", "wat")]:
             self.assertEqual(self.post("/tasks/", self.valid(project, **{key: value})).status_code, 400, key)
         self.assertEqual(self.post("/tasks/", self.valid(project, due_date="soon")).status_code, 400)
@@ -235,5 +235,97 @@ class TaskApiTests(ApiTestCase):
         self.assertEqual(self.get("/tasks/", priority="Low").data["count"], 0)
         res = self.get("/tasks/", priority="bogus")
         self.assertEqual(res.status_code, 400)
-        self.assertEqual(res.data["error"]["message"], "priority must be High, Medium or Low.")
+        self.assertEqual(res.data["error"]["message"], "priority must be Critical, High, Medium or Low.")
         self.assertEqual(self.get(f"/projects/{project.id}/tasks/", priority="bogus").status_code, 400)
+
+
+class WorkDateAndOptionalDueTests(ApiTestCase):
+    def body(self, **extra):
+        if not hasattr(self, "proj"):
+            self.proj = self.project(name="Work log")
+        return {"title": "Past work", "project_id": self.proj.id, "owner_id": self.proj.lead_id, **extra}
+
+    def test_work_date_defaults_to_today_and_due_date_is_optional(self):
+        res = self.post("/tasks/", self.body())
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertEqual(res.data["work_date"], day(0).isoformat())
+        self.assertEqual(
+            (res.data["due_date"], res.data["due_offset"], res.data["group"], res.data["bucket"], res.data["due_label"]),
+            (None, None, "today", "today", "Today's work"),
+        )
+
+    def test_previous_month_work_date_is_kept_on_create_and_edit(self):
+        last_month = day(-40)
+        res = self.post("/tasks/", self.body(work_date=last_month.isoformat(), state="done", priority="Critical"))
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertEqual((res.data["work_date"], res.data["priority"]), (last_month.isoformat(), "Critical"))
+        tid = res.data["id"]
+        # An unrelated edit must not touch the work date.
+        self.patch(f"/tasks/{tid}/", {"title": "Past work, renamed"})
+        self.assertEqual(Task.objects.get(pk=tid).work_date, last_month)
+        res = self.patch(f"/tasks/{tid}/", {"work_date": day(-35).isoformat(), "due_date": day(-30).isoformat()})
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual((res.data["work_date"], res.data["due_date"]), (day(-35).isoformat(), day(-30).isoformat()))
+        self.assertTrue(
+            ActivityLog.objects.filter(description__contains=f"work date {day(-40).day} ").exists(),
+            "the work-date change is logged",
+        )
+        # The deadline can be cleared again.
+        self.assertIsNone(self.patch(f"/tasks/{tid}/", {"due_date": None}).data["due_date"])
+
+    def test_future_work_date_accepted(self):
+        res = self.post("/tasks/", self.body(work_date=day(3).isoformat()))
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(res.data["work_date"], day(3).isoformat())
+
+    def test_malformed_work_date_rejected(self):
+        res = self.post("/tasks/", self.body(work_date="14-10-2026"))
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.data["error"]["fields"]["work_date"], ["Enter the work date as a valid date."])
+        self.assertEqual(Task.objects.count(), 0)
+
+    def test_work_date_range_filter(self):
+        project = self.project()
+        old = self.task(project=project, title="Old", work_date=day(-40))
+        self.task(project=project, title="Recent", work_date=day(-2))
+        res = self.get("/tasks/", status="all", work_from=day(-45).isoformat(), work_to=day(-30).isoformat())
+        self.assertEqual([r["id"] for r in res.data["results"]], [old.id])
+        self.assertEqual(self.get("/tasks/", work_from="bad").status_code, 400)
+
+    def test_tasks_without_due_date_sort_last_and_never_count_as_overdue(self):
+        project = self.project()
+        nodue = self.task(project=project, title="No deadline", due=None)
+        dated = self.task(project=project, title="Dated", due=-1)
+        ids = [r["id"] for r in self.get("/tasks/", status="all").data["results"]]
+        self.assertEqual(ids, [dated.id, nodue.id])
+        self.assertEqual(self.get("/dashboard/summary/").data["overdue"], 1)
+        member = self.get(f"/members/{project.lead_id}/").data
+        self.assertEqual([w["id"] for w in member["work"]], [dated.id, nodue.id])
+
+    def test_undated_task_for_today_is_on_the_today_card_not_later(self):
+        res = self.post("/tasks/", self.body(work_date=day(0).isoformat()))
+        self.assertEqual(res.data["group"], "today")
+        listing = self.get("/tasks/", group="today").data
+        self.assertEqual([r["id"] for r in listing["results"]], [res.data["id"]])
+        self.assertEqual((listing["counts"]["today"], listing["counts"]["later"]), (1, 0))
+        self.assertEqual(self.get("/dashboard/summary/").data["due_today"], 1)
+        self.assertEqual(self.get("/dashboard/summary/").data["overdue"], 0)
+
+    def test_undated_task_follows_its_work_date(self):
+        old = self.post("/tasks/", self.body(title="Open since Monday", work_date=day(-3).isoformat())).data
+        self.assertEqual((old["group"], old["bucket"], old["due_label"]), ("overdue", "overdue", "Work date 3 days ago"))
+        # Moving its work date to today moves it to the Today card.
+        moved = self.patch(f"/tasks/{old['id']}/", {"work_date": day(0).isoformat()}).data
+        self.assertEqual((moved["group"], moved["due_label"]), ("today", "Today's work"))
+        # A deadline always wins over the work date.
+        dated = self.patch(f"/tasks/{old['id']}/", {"due_date": day(5).isoformat()}).data
+        self.assertEqual(dated["group"], "week")
+        counts = self.get("/tasks/").data["counts"]
+        self.assertEqual((counts["overdue"], counts["today"], counts["week"]), (0, 0, 1))
+
+    def test_group_filter_matches_rules_for_undated_past_work(self):
+        tid = self.post("/tasks/", self.body(work_date=day(-10).isoformat())).data["id"]
+        self.assertEqual([r["id"] for r in self.get("/tasks/", group="overdue").data["results"]], [tid])
+        self.assertEqual(self.get("/tasks/", group="today").data["results"], [])
+        self.assertEqual(self.get("/dashboard/summary/").data["overdue"], 1)
+

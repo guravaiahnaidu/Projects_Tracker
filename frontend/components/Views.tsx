@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import {
+  byDue,
+  dateOffset,
   departments,
   EMPLOYMENT_TYPES,
   MEMBER_STATUSES,
@@ -69,7 +71,7 @@ function startText(date: string) {
 
 /* Colour by how soon the task is due (a blocked task keeps its due-date colour and gets a pill). */
 function dueTone(t: Task) {
-  const d = t.dueOffset;
+  const d = dateOffset(t); // the deadline, or the work date when there is none
   if (d < 0) return { dot: "bg-st-red", text: "text-st-red-strong" };
   if (d === 0) return { dot: "bg-st-orange", text: "text-st-orange-strong" };
   if (d <= 2) return { dot: "bg-st-amber", text: "text-st-amber-strong" };
@@ -81,7 +83,7 @@ export function personInfo(m: Member) {
   const roles = projects.flatMap((p) =>
     p.members.filter((x) => x.name === m.name).map((x) => ({ project: p.name, projectId: p.id, role: x.role })),
   );
-  const work = tasks.filter((t) => t.owner === m.name && t.state !== "done").sort((a, b) => a.dueOffset - b.dueOffset);
+  const work = tasks.filter((t) => t.owner === m.name && t.state !== "done").sort(byDue);
   const overdue = work.filter((t) => taskGroup(t) === "overdue").length;
   const blocked = work.filter((t) => t.state === "blocked").length;
   const leads = projects.filter((p) => p.lead === m.name).length;

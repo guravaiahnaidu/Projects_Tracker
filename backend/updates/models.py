@@ -36,6 +36,8 @@ class DailyUpdate(models.Model):
     notes = models.TextField(blank=True, default="")
     status = models.CharField(max_length=10, choices=OverallStatus.choices, default=OverallStatus.ON_TRACK)
     review_status = models.CharField(max_length=10, choices=ReviewStatus.choices, default=ReviewStatus.NEW)
+    # Created automatically because the employee logged tasks for this project and day (see updates/tasklink.py).
+    from_tasks = models.BooleanField(default=False)
     shared_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

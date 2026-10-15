@@ -8,8 +8,10 @@ class Phase(models.TextChoices):
     PLANNING = "Planning", "Planning"
     NOT_STARTED = "Not Started", "Not Started"
     IN_PROGRESS = "In Progress", "In Progress"
+    UNDER_TESTING = "Under Testing", "Under Testing"
     AT_RISK = "At Risk", "At Risk"
     ON_HOLD = "On Hold", "On Hold"
+    NO_UPDATES = "No Updates", "No Updates"
     COMPLETED = "Completed", "Completed"
     CANCELLED = "Cancelled", "Cancelled"
 
@@ -30,12 +32,12 @@ class Project(models.Model):
     name = models.CharField(max_length=200)
     department = models.CharField(max_length=120, default=DEFAULT_DEPARTMENT)
     client = models.CharField(max_length=120, blank=True, default="")  # "" = internal / no client
-    lead = models.ForeignKey(Member, on_delete=models.PROTECT, related_name="led_projects")
+    lead = models.ForeignKey(Member, null=True, blank=True, on_delete=models.PROTECT, related_name="led_projects")
     phase = models.CharField(max_length=20, choices=Phase.choices, default=Phase.IN_PROGRESS)
     priority = models.CharField(max_length=10, choices=Priority.choices, default=Priority.MEDIUM)
     description = models.TextField(blank=True, default="")
-    start_date = models.DateField()
-    end_date = models.DateField()
+    start_date = models.DateField(null=True, blank=True)  # optional
+    end_date = models.DateField(null=True, blank=True)  # optional (the deadline)
     progress = models.PositiveSmallIntegerField(
         default=0, validators=[MinValueValidator(0), MaxValueValidator(100)]
     )
@@ -47,7 +49,10 @@ class Project(models.Model):
         ordering = ["id"]
         constraints = [
             models.CheckConstraint(
-                condition=models.Q(end_date__gt=models.F("start_date")), name="project_end_after_start"
+                condition=models.Q(start_date__isnull=True)
+                | models.Q(end_date__isnull=True)
+                | models.Q(end_date__gt=models.F("start_date")),
+                name="project_end_after_start",
             ),
             models.CheckConstraint(
                 condition=models.Q(progress__gte=0, progress__lte=100), name="project_progress_0_100"
@@ -107,9 +112,9 @@ class DecisionRecord(models.Model):
     recorded_at = models.DateTimeField(auto_now_add=True)
     # Snapshot of the project when the decision was made
     project_name = models.CharField(max_length=200)
-    lead_name = models.CharField(max_length=120)
+    lead_name = models.CharField(max_length=120, blank=True, default="")
     health = models.CharField(max_length=12)
-    deadline = models.DateField()
+    deadline = models.DateField(null=True, blank=True)
     context = models.CharField(max_length=120)  # e.g. "71% done with 92% of the time used"
     # The activity entry written when the decision was resolved (used to undo it).
     event = models.OneToOneField("activity.ActivityLog", null=True, blank=True, on_delete=models.SET_NULL, related_name="decision_record")

@@ -9,6 +9,7 @@ from . import rules
 from .models import Priority, State, Task
 
 BLOCKED_NOTE_MESSAGE = "Say what the task is waiting on, so others can help unblock it."
+WORK_DATE_INVALID = "Enter the work date as a valid date."
 
 
 class _TaskRulesMixin:
@@ -29,7 +30,9 @@ class TaskCreateSerializer(_TaskRulesMixin, serializers.Serializer):
     owner_id = serializers.PrimaryKeyRelatedField(
         queryset=Member.objects.all(), source="owner", error_messages={"does_not_exist": "Choose an owner from the team."}
     )
-    due_date = serializers.DateField(error_messages={"required": "Pick a due date.", "invalid": "Pick a due date."})
+    # Omitted work_date means today (the model default); past and future dates are accepted.
+    work_date = serializers.DateField(required=False, error_messages={"invalid": WORK_DATE_INVALID})
+    due_date = serializers.DateField(required=False, allow_null=True, default=None, error_messages={"invalid": "Pick a valid due date."})
     priority = serializers.ChoiceField(choices=Priority.choices, required=False, default=Priority.MEDIUM)
     state = serializers.ChoiceField(choices=State.choices, required=False, default=State.NOT_STARTED)
     note = serializers.CharField(required=False, allow_blank=True, default="", max_length=TASK_NOTE_MAX)
@@ -53,7 +56,8 @@ class TaskUpdateSerializer(_TaskRulesMixin, serializers.Serializer):
     owner_id = serializers.PrimaryKeyRelatedField(
         queryset=Member.objects.all(), source="owner", required=False, error_messages={"does_not_exist": "Choose an owner from the team."}
     )
-    due_date = serializers.DateField(required=False, error_messages={"invalid": "Pick a due date."})
+    work_date = serializers.DateField(required=False, error_messages={"invalid": WORK_DATE_INVALID})
+    due_date = serializers.DateField(required=False, allow_null=True, error_messages={"invalid": "Pick a valid due date."})
     priority = serializers.ChoiceField(choices=Priority.choices, required=False)
     state = serializers.ChoiceField(choices=State.choices, required=False)
     note = serializers.CharField(required=False, allow_blank=True, max_length=TASK_NOTE_MAX)
@@ -92,7 +96,8 @@ def task_payload(task: Task, on=None) -> dict:
         "project_name": task.project.name,
         "owner": task.owner_id,
         "owner_name": task.owner.name,
-        "due_date": task.due_date.isoformat(),
+        "work_date": task.work_date.isoformat(),
+        "due_date": task.due_date.isoformat() if task.due_date else None,
         "due_offset": rules.due_offset(task, on),
         "state": task.state,
         "priority": task.priority,

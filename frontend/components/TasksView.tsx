@@ -1,7 +1,11 @@
 "use client";
 
 import { useState, type CSSProperties, type FormEvent } from "react";
+import { Combobox, DateField, type ComboOption } from "./FormControls";
 import {
+  byDue,
+  dateOffset,
+  PRIORITIES,
   projectById,
   projects,
   tasks,
@@ -10,10 +14,10 @@ import {
   type Task,
   type TaskState,
 } from "@/lib/data";
-import { api, errorMessage } from "@/lib/api";
-import { memberId, mutate, numericId, SCOPES } from "@/lib/store";
-import { isoToLocalDate, wallClockIso } from "@/lib/serverClock";
-import { blockedNoteOrNull, blockedNoteProblem } from "@/lib/blockedNote";
+import { api, ApiError, errorMessage } from "@/lib/api";
+import { mutate, numericId, SCOPES, serverToday } from "@/lib/store";
+import { addDaysIso, isoToLocalDate, wallClockIso } from "@/lib/serverClock";
+import { BLOCKED_NOTE_TOO_LONG, blockedNoteOrNull, blockedNoteProblem, NOTE_MAX_LENGTH } from "@/lib/blockedNote";
 import { useNow } from "./hooks";
 import type { OpenRef } from "./Overview";
 import { Modal } from "./ui";
@@ -30,7 +34,7 @@ export const groupMeta: Record<
 > = {
   overdue: {
     label: "Overdue",
-    sub: "Past the due date",
+    sub: "Past due or work date",
     bar: "bg-(--g-overdue)",
     text: "text-(--g-overdue-strong)",
     dot: "bg-(--g-overdue)",
@@ -38,8 +42,8 @@ export const groupMeta: Record<
     edge: "bg-(--g-overdue)",
   },
   today: {
-    label: "Due today",
-    sub: "Needs action now",
+    label: "Today",
+    sub: "Due or worked on today",
     bar: "bg-(--g-today)",
     text: "text-(--g-today-strong)",
     dot: "bg-(--g-today)",
@@ -83,8 +87,8 @@ export const groupMeta: Record<
     edge: "bg-st-purple",
   },
   done: {
-    label: "Done",
-    sub: "Completed",
+    label: "Completed",
+    sub: "Finished work",
     bar: "bg-st-green",
     text: "text-st-green",
     dot: "bg-st-green",
@@ -96,7 +100,7 @@ export const groupMeta: Record<
 export function taskGroup(t: Task): Group {
   if (t.state === "done") return "done";
   if (t.state === "blocked") return "blocked";
-  const d = t.dueOffset;
+  const d = dateOffset(t); // the deadline, or the work date when there is none
   if (d < 0) return "overdue";
   if (d === 0) return "today";
   if (d <= 2) return "next2";
@@ -198,10 +202,47 @@ export const STATES: { value: TaskState; label: string }[] = [
   { value: "not-started", label: "Not Started" },
   { value: "in-progress", label: "In Progress" },
   { value: "blocked", label: "Blocked" },
-  { value: "done", label: "Done" },
+  { value: "done", label: "Completed" },
 ];
 
 type StatusFilter = "open" | "all" | TaskState;
+
+type DateRange = "any" | "today" | "7d" | "30d" | "month" | "prevMonth" | "custom";
+
+const DATE_RANGES: { value: DateRange; label: string }[] = [
+  { value: "any", label: "Any work date" },
+  { value: "today", label: "Today" },
+  { value: "7d", label: "Last 7 days" },
+  { value: "30d", label: "Last 30 days" },
+  { value: "month", label: "This month" },
+  { value: "prevMonth", label: "Previous month" },
+  { value: "custom", label: "Custom range" },
+];
+
+/** Inclusive [from, to] work-date bounds (YYYY-MM-DD, "" = open-ended) for a range, using the server's today. */
+function rangeBounds(range: DateRange, from: string, to: string): [string, string] | null {
+  const today = serverToday();
+  const firstOfMonth = `${today.slice(0, 8)}01`;
+  const lastOfPrev = addDaysIso(firstOfMonth, -1);
+  switch (range) {
+    case "any":
+      return null;
+    case "today":
+      return [today, today];
+    case "7d":
+      return [addDaysIso(today, -6), today];
+    case "30d":
+      return [addDaysIso(today, -29), today];
+    case "month":
+      return [firstOfMonth, addDaysIso(`${addDaysIso(firstOfMonth, 31).slice(0, 8)}01`, -1)];
+    case "prevMonth":
+      return [`${lastOfPrev.slice(0, 8)}01`, lastOfPrev];
+    case "custom":
+      return from || to ? [from, to] : null;
+  }
+}
+
+const shortIso = (iso: string) => isoToLocalDate(iso).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
 
 const STATUS_FILTERS: { value: StatusFilter; label: string }[] = [
   { value: "open", label: "Open" },
@@ -210,6 +251,7 @@ const STATUS_FILTERS: { value: StatusFilter; label: string }[] = [
 ];
 
 const priorityClass: Record<Priority, string> = {
+  Critical: "w-fit rounded bg-st-red/10 px-1.5 text-st-red-strong",
   High: "text-st-red-strong",
   Medium: "text-st-orange-strong",
   Low: "text-muted",
@@ -233,6 +275,7 @@ function shortDate(d: Date) {
 
 export function dueText(t: Task) {
   const d = t.dueOffset;
+  if (d === null) return `Work date ${isoToLocalDate(t.workDate).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}`;
   if (d < 0) return `${-d} day${d === -1 ? "" : "s"} overdue`;
   if (d === 0) return "Today";
   if (d === 1) return "Tomorrow";
@@ -310,16 +353,31 @@ function TaskRow({
       <div className="min-w-0">
         <div className="text-[15px] font-bold leading-snug">{projectById(task.projectId).name}</div>
         <div className={`text-[14px] leading-snug ${g === "done" ? "text-muted line-through" : "text-ink/85"}`}>{task.title}</div>
+        {task.dueDate && (
+          <div className="text-[12.5px] text-muted" suppressHydrationWarning>
+            Work date {now ? shortIso(task.workDate) : task.workDate}
+          </div>
+        )}
       </div>
       <div className="truncate text-[15px]">{task.owner}</div>
-      <div>
-        <div className={`text-[15px] leading-snug ${urgent ? "font-bold" : "font-semibold"} ${dueColor}`}>
-          {g === "done" ? "Done" : dueText(task)}
+      {task.dueDate ? (
+        <div>
+          <div className={`text-[15px] leading-snug ${urgent ? "font-bold" : "font-semibold"} ${dueColor}`}>
+            {g === "done" ? "Completed" : dueText(task)}
+          </div>
+          <div className="text-[13px] text-muted" suppressHydrationWarning>
+            {now ? shortDate(isoToLocalDate(task.dueDate)) : " "}
+          </div>
         </div>
-        <div className="text-[13px] text-muted" suppressHydrationWarning>
-          {now ? shortDate(isoToLocalDate(task.dueDate)) : " "}
+      ) : (
+        // No deadline: show when the work was done instead.
+        <div>
+          <div className={`text-[15px] leading-snug ${urgent ? "font-bold" : "font-semibold"} ${dueColor}`} suppressHydrationWarning>
+            {now ? shortDate(isoToLocalDate(task.workDate)) : task.workDate}
+          </div>
+          <div className="text-[13px] text-muted">{g === "done" ? "Completed · work date" : "Work date"}</div>
         </div>
-      </div>
+      )}
       <div className={`text-sm font-semibold ${priorityClass[task.priority]}`}>{task.priority}</div>
       <select
         aria-label={`Status of ${task.title}`}
@@ -358,7 +416,10 @@ function CalendarView({
   const today = wallClockIso(now); // the server's calendar date
 
   const byDay = new Map<string, Task[]>();
-  for (const t of rows) byDay.set(t.dueDate, [...(byDay.get(t.dueDate) ?? []), t]);
+  for (const t of rows) {
+    const day = t.dueDate ?? t.workDate; // tasks without a deadline show on their work date
+    byDay.set(day, [...(byDay.get(day) ?? []), t]);
+  }
 
   return (
     <section className="rounded-xl border border-line bg-surface p-5 shadow-sm">
@@ -428,90 +489,307 @@ function CalendarView({
   );
 }
 
+type TaskField = "title" | "project" | "owner" | "work" | "due" | "note";
+// Server field names -> form fields, so API validation messages land next to the right input.
+const TASK_SERVER_FIELDS: Record<string, TaskField> = {
+  title: "title",
+  project_id: "project",
+  owner_id: "owner",
+  work_date: "work",
+  due_date: "due",
+  note: "note",
+};
+
+/** Owner choices: the project's team first (with their role), then everyone else; inactive people are left out. */
+export function ownerOptions(projectId: string, keep?: string): ComboOption[] {
+  const project = projects.find((p) => p.id === projectId);
+  const role = (name: string) => project?.members.find((x) => x.name === name)?.role;
+  return team
+    .filter((m) => m.id !== undefined && (m.status !== "inactive" || m.name === keep))
+    .sort((a, b) => Number(!role(a.name)) - Number(!role(b.name)) || a.name.localeCompare(b.name))
+    .map((m) => ({ value: String(m.id), label: m.name, hint: role(m.name) ?? (m.status === "on_leave" ? "On leave" : m.title) }));
+}
+
+/** Work date problems shared by the new-task form and the task editor. */
+export function workDateProblem(iso: string, typed: boolean): string {
+  if (typed) return "Enter the work date as dd-mm-yyyy.";
+  if (!iso) return "Select the work date.";
+  return "";
+}
+
+export function FieldNote({ id, message }: { id: string; message?: string }) {
+  if (!message) return null;
+  return (
+    <p id={id} className="mt-1 text-[13px] font-medium text-st-red-strong">
+      {message}
+    </p>
+  );
+}
+
 export function NewTaskForm({
   onCreated,
-  defaultProjectId = projects[0]?.id ?? "",
+  onCancel,
+  defaultProjectId = "",
 }: {
   onCreated: () => void;
+  onCancel?: () => void;
   defaultProjectId?: string;
 }) {
   const [title, setTitle] = useState("");
   const [projectId, setProjectId] = useState(defaultProjectId);
-  const owners = getOwners();
-  const [owner, setOwner] = useState(owners[0] ?? "");
+  const [owner, setOwner] = useState(""); // member id
+  const [workDate, setWorkDate] = useState(serverToday);
+  const [workTyped, setWorkTyped] = useState(false); // text entered but not a valid date
   const [due, setDue] = useState("");
+  const [dueTyped, setDueTyped] = useState(false);
   const [priority, setPriority] = useState<Priority>("Medium");
+  const [state, setState] = useState<TaskState>("not-started");
+  const [note, setNote] = useState("");
+  const [touched, setTouched] = useState<Partial<Record<TaskField, boolean>>>({});
+  const [attempted, setAttempted] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
+  const [serverError, setServerError] = useState("");
+  const [serverFields, setServerFields] = useState<Partial<Record<TaskField, string>>>({});
+
+  const projectOptions = [...projects].sort((a, b) => a.name.localeCompare(b.name)).map((p) => ({ value: p.id, label: p.name, hint: p.client }));
+  const owners = ownerOptions(projectId);
+
+  const problems: Partial<Record<TaskField, string>> = {
+    title: !title.trim() ? "Give the task a name." : "",
+    project: !projectId ? "Choose a project." : "",
+    owner: !owner ? "Choose who owns this task." : "",
+    work: workDateProblem(workDate, workTyped),
+    due: dueTyped ? "Enter the due date as dd-mm-yyyy, or leave it empty." : "",
+    note: state === "blocked" ? blockedNoteProblem(note) : note.trim().length > NOTE_MAX_LENGTH ? BLOCKED_NOTE_TOO_LONG : "",
+  };
+  const order: TaskField[] = ["title", "project", "owner", "work", "due", "note"];
+  const firstProblem = order.find((f) => problems[f]);
+  const errorFor = (f: TaskField) => serverFields[f] || ((attempted || touched[f]) && problems[f]) || "";
+  const touch = (f: TaskField) => setTouched((t) => ({ ...t, [f]: true }));
+  const edited = (f: TaskField) => setServerFields((s) => (s[f] ? { ...s, [f]: "" } : s));
+  const a11y = (f: TaskField) => ({
+    invalid: !!errorFor(f),
+    describedBy: errorFor(f) ? `nt-${f}-error` : undefined,
+    onBlur: () => touch(f),
+  });
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!title.trim() || !due || saving) return;
+    setAttempted(true);
+    if (saving) return;
+    if (firstProblem) {
+      document.getElementById(`nt-${firstProblem}`)?.focus();
+      return;
+    }
     setSaving(true);
-    setError("");
+    setServerError("");
+    setServerFields({});
     try {
-      await mutate(() =>
-        api.createTask({
-          title: title.trim(),
-          project_id: numericId(projectId),
-          owner_id: memberId(owner),
-          due_date: due,
-          priority,
-        }),
+      await mutate(
+        () =>
+          api.createTask({
+            title: title.trim().replace(/\s+/g, " "),
+            project_id: numericId(projectId),
+            owner_id: Number(owner),
+            work_date: workDate,
+            due_date: due || null,
+            priority,
+            state,
+            note: note.trim(),
+          }),
         SCOPES.task,
       );
       onCreated();
     } catch (err) {
-      setError(errorMessage(err));
+      const fields = err instanceof ApiError ? err.fields : {};
+      const mapped: Partial<Record<TaskField, string>> = {};
+      for (const [k, msgs] of Object.entries(fields)) if (TASK_SERVER_FIELDS[k]) mapped[TASK_SERVER_FIELDS[k]] = msgs[0];
+      setServerFields(mapped);
+      setServerError(Object.keys(mapped).length ? "Please fix the highlighted fields." : errorMessage(err));
       setSaving(false);
     }
   };
 
-  const field = "flex flex-col gap-1.5 text-sm font-semibold";
+  const label = "mb-1.5 block text-sm font-semibold";
+  const req = (
+    <span className="text-st-red-strong" aria-hidden>
+      {" "}
+      *
+    </span>
+  );
+  const invalidCls = (f: TaskField) => (errorFor(f) ? "border-st-red! focus:ring-st-red/20!" : "");
+  const err = (f: TaskField) => <FieldNote id={`nt-${f}-error`} message={errorFor(f)} />;
+  const when = workTyped || !workDate ? "" : workDate < serverToday() ? "past" : workDate > serverToday() ? "future" : "";
+
   return (
-    <form onSubmit={submit} className="space-y-4">
-      <label className={field}>
-        Title
-        <input autoFocus required value={title} onChange={(e) => setTitle(e.target.value)} className={`${control} font-normal`} />
-      </label>
+    <form onSubmit={submit} noValidate className="space-y-4">
+      <div>
+        <label htmlFor="nt-title" className={label}>
+          Task Title{req}
+        </label>
+        <input
+          id="nt-title"
+          autoFocus
+          autoComplete="off"
+          maxLength={300}
+          value={title}
+          onChange={(e) => {
+            setTitle(e.target.value);
+            edited("title");
+          }}
+          onBlur={() => touch("title")}
+          aria-required
+          aria-invalid={!!errorFor("title")}
+          aria-describedby={errorFor("title") ? "nt-title-error" : undefined}
+          placeholder="e.g. Prepare monthly payroll report"
+          className={`${control} w-full font-normal placeholder:text-muted ${invalidCls("title")}`}
+        />
+        {err("title")}
+      </div>
+
       <div className="grid gap-4 sm:grid-cols-2">
-        <label className={field}>
-          Project
-          <select value={projectId} onChange={(e) => setProjectId(e.target.value)} className={`${control} font-normal`}>
-            {projects.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className={field}>
-          Owner
-          <select value={owner} onChange={(e) => setOwner(e.target.value)} className={`${control} font-normal`}>
-            {owners.map((o) => (
-              <option key={o}>{o}</option>
-            ))}
-          </select>
-        </label>
-        <label className={field}>
-          Due date
-          <input type="date" required value={due} onChange={(e) => setDue(e.target.value)} className={`${control} font-normal`} />
-        </label>
-        <label className={field}>
-          Priority
-          <select value={priority} onChange={(e) => setPriority(e.target.value as Priority)} className={`${control} font-normal`}>
-            {(["High", "Medium", "Low"] as const).map((p) => (
+        <div>
+          <label htmlFor="nt-project" className={label}>
+            Project{req}
+          </label>
+          <Combobox
+            id="nt-project"
+            value={projectId}
+            onChange={(v) => {
+              setProjectId(v);
+              edited("project");
+            }}
+            options={projectOptions}
+            placeholder="Select project"
+            emptyText={projects.length ? "No matching project" : "Create a project first"}
+            {...a11y("project")}
+          />
+          {err("project")}
+        </div>
+        <div>
+          <label htmlFor="nt-owner" className={label}>
+            Owner{req}
+          </label>
+          <Combobox
+            id="nt-owner"
+            value={owner}
+            onChange={(v) => {
+              setOwner(v);
+              edited("owner");
+            }}
+            options={owners}
+            placeholder="Select employee"
+            emptyText={team.length ? "No matching employee" : "Add employees in the Team tab first"}
+            {...a11y("owner")}
+          />
+          {err("owner")}
+        </div>
+
+        <div>
+          <label htmlFor="nt-work" className={label}>
+            Work Date{req}
+          </label>
+          <DateField
+            id="nt-work"
+            value={workDate}
+            onChange={(iso, typed) => {
+              setWorkDate(iso);
+              setWorkTyped(typed);
+              edited("work");
+            }}
+            {...a11y("work")}
+          />
+          {err("work") || (
+            <p className="mt-1 text-[13px] text-muted">{when === "past" ? "Recording earlier work." : when === "future" ? "Planning work for a later day." : "The day the work is done. Past and future dates are fine."}</p>
+          )}
+        </div>
+        <div>
+          <label htmlFor="nt-due" className={label}>
+            Due Date <span className="font-normal text-muted">(optional)</span>
+          </label>
+          <DateField
+            id="nt-due"
+            value={due}
+            onChange={(iso, typed) => {
+              setDue(iso);
+              setDueTyped(typed);
+              edited("due");
+            }}
+            {...a11y("due")}
+          />
+          {err("due")}
+        </div>
+
+        <div>
+          <label htmlFor="nt-priority" className={label}>
+            Priority
+          </label>
+          <select id="nt-priority" value={priority} onChange={(e) => setPriority(e.target.value as Priority)} className={`${control} w-full font-normal`}>
+            {PRIORITIES.map((p) => (
               <option key={p}>{p}</option>
             ))}
           </select>
-        </label>
+        </div>
+        <div>
+          <label htmlFor="nt-status" className={label}>
+            Status
+          </label>
+          <select id="nt-status" value={state} onChange={(e) => setState(e.target.value as TaskState)} className={`${control} w-full font-normal`}>
+            {STATES.map((s) => (
+              <option key={s.value} value={s.value}>
+                {s.label}
+              </option>
+            ))}
+          </select>
+        </div>
       </div>
-      {error && (
+
+      <div>
+        <label htmlFor="nt-note" className={label}>
+          {state === "blocked" ? (
+            <>What is it waiting on?{req}</>
+          ) : (
+            <>
+              Description / Work Notes <span className="font-normal text-muted">(optional)</span>
+            </>
+          )}
+        </label>
+        <textarea
+          id="nt-note"
+          rows={4}
+          value={note}
+          onChange={(e) => {
+            setNote(e.target.value);
+            edited("note");
+          }}
+          onBlur={() => touch("note")}
+          aria-invalid={!!errorFor("note")}
+          aria-describedby={errorFor("note") ? "nt-note-error" : undefined}
+          placeholder={
+            state === "blocked" ? "e.g. Waiting for the vendor to resend the export file" : "Work performed, outcomes and any blockers..."
+          }
+          className={`w-full resize-y rounded-lg border border-line bg-surface px-3.5 py-2.5 text-[15px] text-ink outline-none placeholder:text-muted focus:border-st-blue focus:ring-2 focus:ring-st-blue/20 ${invalidCls("note")}`}
+        />
+        {err("note")}
+      </div>
+
+      {serverError && (
         <p role="alert" className="rounded-lg bg-st-red/8 px-3 py-2 text-sm font-medium text-st-red-strong">
-          {error}
+          {serverError}
         </p>
       )}
-      <div className="flex justify-end pt-2">
+
+      <div className="flex justify-end gap-2.5 pt-1">
+        {onCancel && (
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={saving}
+            className="rounded-lg border border-line bg-surface px-4 py-2.5 font-medium hover:bg-track/60 disabled:opacity-60"
+          >
+            Cancel
+          </button>
+        )}
         <button
           type="submit"
           disabled={saving}
@@ -613,6 +891,10 @@ export function TasksView({
   const [status, setStatus] = useState<StatusFilter>("open");
   const [project, setProject] = useState("all");
   const [owner, setOwner] = useState("all");
+  const [priority, setPriority] = useState<Priority | "all">("all");
+  const [range, setRange] = useState<DateRange>("any");
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
   const [alerts, setAlerts] = useState(true);
   const [colorsOpen, setColorsOpen] = useState(false);
   const [colors, setColors] = useState<AlertColors>(loadColors);
@@ -625,29 +907,51 @@ export function TasksView({
   const [blocking, setBlocking] = useState<Task | null>(null); // task waiting for its "blocked" note
 
   const owners = getOwners();
-  const counts = Object.fromEntries(groupOrder.map((g) => [g, 0])) as Record<Group, number>;
-  for (const t of tasks) counts[taskGroup(t)]++;
+  const allCounts = Object.fromEntries(groupOrder.map((g) => [g, 0])) as Record<Group, number>;
+  for (const t of tasks) allCounts[taskGroup(t)]++;
 
   const q = query.trim().toLowerCase();
-  const rows = tasks
-    .filter((t) => (status === "open" ? t.state !== "done" : status === "all" || t.state === status))
+  const bounds = rangeBounds(range, customFrom, customTo);
+  // Every filter except status and the card focus: the cards count these, so they follow the date range too.
+  const scoped = tasks
     .filter((t) => project === "all" || t.projectId === project)
     .filter((t) => owner === "all" || t.owner === owner)
-    .filter((t) => !focus || taskGroup(t) === focus)
+    .filter((t) => priority === "all" || t.priority === priority)
+    .filter((t) => !bounds || ((!bounds[0] || t.workDate >= bounds[0]) && (!bounds[1] || t.workDate <= bounds[1])))
     .filter(
       (t) =>
         !q ||
         t.title.toLowerCase().includes(q) ||
         t.owner.toLowerCase().includes(q) ||
+        (t.note ?? "").toLowerCase().includes(q) ||
         projectById(t.projectId).name.toLowerCase().includes(q),
-    )
-    .sort((a, b) => a.dueOffset - b.dueOffset);
+    );
+  const counts = Object.fromEntries(groupOrder.map((g) => [g, 0])) as Record<Group, number>;
+  for (const t of scoped) counts[taskGroup(t)]++;
+  // Also without status, so we can tell how many completed tasks the "Open" status is hiding.
+  const matching = scoped.filter((t) => !focus || taskGroup(t) === focus);
+  const rows = matching
+    .filter((t) => (status === "open" ? t.state !== "done" : status === "all" || t.state === status))
+    .sort(byDue);
+  const hiddenDone = status === "open" ? matching.filter((t) => t.state === "done").length : 0;
+  const filtered = !!q || status !== "open" || project !== "all" || owner !== "all" || priority !== "all" || range !== "any";
+  const clearFilters = () => {
+    setQuery("");
+    setStatus("open");
+    setProject("all");
+    setOwner("all");
+    setPriority("all");
+    setRange("any");
+    setCustomFrom("");
+    setCustomTo("");
+  };
+  const customProblem = range === "custom" && customFrom && customTo && customTo < customFrom ? "The end date is before the start date." : "";
 
   const grouped = groupOrder
     .map((g) => ({ group: g, items: rows.filter((t) => taskGroup(t) === g) }))
     .filter((x) => x.items.length > 0);
 
-  const action = counts.overdue + counts.today;
+  const action = allCounts.overdue + allCounts.today; // the header is always about today, whatever the filters
 
   // The select shows the stored status; it only changes once the server has accepted the new one and the data is refetched.
   const setState = async (t: Task, s: TaskState) => {
@@ -680,7 +984,7 @@ export function TasksView({
         <div>
           <h2 className="text-[1.625rem] font-bold leading-tight tracking-tight">Tasks &amp; Deadlines</h2>
           <p className="mt-1 text-muted">
-            {action} item{action === 1 ? "" : "s"} need{action === 1 ? "s" : ""} action today: {counts.overdue} overdue, {counts.today} due
+            {action} item{action === 1 ? "" : "s"} need{action === 1 ? "s" : ""} action today: {allCounts.overdue} overdue, {allCounts.today} for
             today.
           </p>
         </div>
@@ -746,6 +1050,19 @@ export function TasksView({
             <option key={o}>{o}</option>
           ))}
         </select>
+        <select value={priority} onChange={(e) => setPriority(e.target.value as Priority | "all")} aria-label="Priority" className={`${control} w-36`}>
+          <option value="all">Any priority</option>
+          {[...PRIORITIES].reverse().map((p) => (
+            <option key={p}>{p}</option>
+          ))}
+        </select>
+        <select value={range} onChange={(e) => setRange(e.target.value as DateRange)} aria-label="Work date" className={`${control} w-44`}>
+          {DATE_RANGES.map((r) => (
+            <option key={r.value} value={r.value}>
+              {r.label}
+            </option>
+          ))}
+        </select>
         <button
           onClick={() => setColorsOpen((o) => !o)}
           aria-expanded={colorsOpen}
@@ -754,6 +1071,51 @@ export function TasksView({
           {colorsOpen ? "Close colors" : "Alert colors"}
         </button>
       </div>
+
+      {range === "custom" && (
+        <div className="-mt-3 flex flex-wrap items-end gap-3">
+          <div className="w-44">
+            <label htmlFor="tf-from" className="mb-1 block text-sm font-semibold text-muted">
+              Work date from
+            </label>
+            <DateField id="tf-from" value={customFrom} onChange={(iso) => setCustomFrom(iso)} invalid={!!customProblem} />
+          </div>
+          <div className="w-44">
+            <label htmlFor="tf-to" className="mb-1 block text-sm font-semibold text-muted">
+              to
+            </label>
+            <DateField id="tf-to" value={customTo} onChange={(iso) => setCustomTo(iso)} invalid={!!customProblem} />
+          </div>
+          {customProblem && <p className="pb-2.5 text-sm font-medium text-st-red-strong">{customProblem}</p>}
+        </div>
+      )}
+
+      {(bounds || filtered) && (
+        <div className="-mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted">
+          {bounds && (
+            <span suppressHydrationWarning>
+              Work date{" "}
+              <b className="text-ink">
+                {bounds[0] && bounds[1] && bounds[0] === bounds[1]
+                  ? shortIso(bounds[0])
+                  : `${bounds[0] ? shortIso(bounds[0]) : "the start"} to ${bounds[1] ? shortIso(bounds[1]) : "today"}`}
+              </b>
+              {" · "}
+              {rows.length} task{rows.length === 1 ? "" : "s"}
+            </span>
+          )}
+          {hiddenDone > 0 && (
+            <button onClick={() => setStatus("all")} className="rounded px-1 text-st-blue underline-offset-2 hover:underline">
+              Show {hiddenDone} completed
+            </button>
+          )}
+          {filtered && (
+            <button onClick={clearFilters} className="rounded px-1 underline underline-offset-2 hover:text-ink">
+              Clear filters
+            </button>
+          )}
+        </div>
+      )}
 
       {focus && (
         <div className="-mt-3 flex items-center gap-2 text-muted">
@@ -809,8 +1171,8 @@ export function TasksView({
       {blocking && <BlockedDialog key={blocking.id} task={blocking} onClose={() => setBlocking(null)} />}
 
       {creating && (
-        <Modal title="New task" onClose={() => setCreating(false)}>
-          <NewTaskForm onCreated={() => setCreating(false)} />
+        <Modal title="New task" onClose={() => setCreating(false)} wide>
+          <NewTaskForm onCreated={() => setCreating(false)} onCancel={() => setCreating(false)} />
         </Modal>
       )}
     </div>

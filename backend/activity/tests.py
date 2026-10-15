@@ -44,10 +44,25 @@ class ActivityApiTests(ApiTestCase):
         self.assertEqual(self.get("/activity/", offset="x").status_code, 400)
         self.assertEqual(self.get("/activity/", limit=9999).data["limit"], 200)
 
-    def test_events_survive_entity_deletion(self):
+    def test_events_removed_with_entity(self):
         project = self.project()
         t = self.task(project=project, title="Temp")
+        ActivityLog.objects.create(action="x", entity_type="t", description="unrelated")
+        ActivityLog.objects.create(action="task.created", entity_type="task", entity_id=t.id, project=project, description="You added “Temp”")
         self.delete(f"/tasks/{t.id}/")
-        self.assertTrue(
-            ActivityLog.objects.filter(description="You deleted “Temp”", project=project).exists()
-        )
+        task_rows = ActivityLog.objects.filter(entity_type="task", entity_id=t.id)
+        self.assertEqual([e.description for e in task_rows], ["You deleted “Temp”"])
+        ActivityLog.objects.create(action="project.updated", entity_type="project", entity_id=project.id, project=project, description="edit")
+        self.delete(f"/projects/{project.id}/")
+        texts = [e.description for e in ActivityLog.objects.order_by("id")]
+        self.assertEqual(texts, ["unrelated", f"You deleted the project {project.name}"])
+
+    def test_history_removed_when_deleted_outside_the_api(self):
+        # e.g. from the Django admin, which does not go through the delete views
+        project = self.project()
+        t = self.task(project=project)
+        ActivityLog.objects.create(action="task.created", entity_type="task", entity_id=t.id, project=project, description="t")
+        ActivityLog.objects.create(action="project.created", entity_type="project", entity_id=project.id, description="p")
+        t.delete()
+        project.delete()
+        self.assertFalse(ActivityLog.objects.exists())

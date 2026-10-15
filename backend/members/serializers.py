@@ -124,7 +124,7 @@ def member_payload(member: Member, on=None) -> dict:
     """Output shape. Expects tasks (with project) and memberships (with project) prefetched."""
     on = on or today_fn()
     open_tasks = [t for t in member.tasks.all() if t.state != "done"]
-    open_tasks.sort(key=lambda t: (t.due_date, t.id))
+    open_tasks.sort(key=task_rules.sort_key)
     return {
         "id": member.id,
         "name": member.name,
@@ -150,7 +150,8 @@ def member_payload(member: Member, on=None) -> dict:
                 "title": t.title,
                 "project_id": t.project_id,
                 "project_name": t.project.name,
-                "due_date": t.due_date.isoformat(),
+                "work_date": t.work_date.isoformat(),
+                "due_date": t.due_date.isoformat() if t.due_date else None,
                 "due_offset": task_rules.due_offset(t, on),
                 "state": t.state,
                 "priority": t.priority,

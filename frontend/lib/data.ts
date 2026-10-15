@@ -5,9 +5,10 @@
 
 export type ProjectStatus = "off-track" | "watch" | "on-track" | "not-started";
 export type TaskState = "not-started" | "in-progress" | "blocked" | "done";
-export type Priority = "High" | "Medium" | "Low";
+export type Priority = "Critical" | "High" | "Medium" | "Low";
+export const PRIORITIES: Priority[] = ["Low", "Medium", "High", "Critical"];
 
-export type ProjectPhase = "Planning" | "Not Started" | "In Progress" | "At Risk" | "On Hold" | "Completed" | "Cancelled";
+export type ProjectPhase = "Planning" | "Not Started" | "In Progress" | "Under Testing" | "At Risk" | "On Hold" | "No Updates" | "Completed" | "Cancelled";
 export type ProjectPriority = "Low" | "Medium" | "High" | "Critical";
 
 export const PROJECT_PRIORITIES: ProjectPriority[] = ["Low", "Medium", "High", "Critical"];
@@ -22,15 +23,15 @@ export interface Project {
   id: string;
   name: string;
   department: string;
-  client: string; // "" only on projects created before a client was required
-  lead: string;
+  client: string; // "" = no client (optional)
+  lead: string; // "" = no lead (optional)
   phase: ProjectPhase; // status set by the project lead
   priority: ProjectPriority;
   description: string;
-  startDate: string; // YYYY-MM-DD
-  endDate: string; // YYYY-MM-DD
-  startOffset: number; // days from the server's today (negative = already started)
-  endOffset: number; // days from the server's today
+  startDate: string | null; // YYYY-MM-DD; null = not set (optional)
+  endDate: string | null; // YYYY-MM-DD deadline; null = not set (optional)
+  startOffset: number | null; // days from the server's today (negative = already started); null = no start date
+  endOffset: number | null; // days from the server's today; null = no deadline
   done: number; // % of work completed
   decision?: string; // what leadership needs to decide, if anything
   objectives: string[];
@@ -43,8 +44,10 @@ export interface Task {
   title: string;
   owner: string;
   projectId: string;
-  dueDate: string; // YYYY-MM-DD
-  dueOffset: number; // days from the server's today (negative = overdue)
+  workDate: string; // YYYY-MM-DD: the day the work was done (may be in the past)
+  dueDate: string | null; // YYYY-MM-DD optional deadline
+  dueOffset: number | null; // days from the server's today to the deadline (negative = overdue); null = no deadline
+  workOffset: number; // days from the server's today to the work date (0 = today, negative = earlier)
   state: TaskState;
   priority: Priority;
   note?: string;
@@ -87,7 +90,9 @@ export const departments: string[] = [];
 
 /* ---------- Derived values ---------- */
 
+/** % of the schedule elapsed; 0 without both dates, so health then follows progress alone (as on the server). */
 export function timeUsed(p: Project): number {
+  if (p.startOffset === null || p.endOffset === null) return 0;
   const total = p.endOffset - p.startOffset;
   const pct = Math.round((-p.startOffset / total) * 100);
   return Math.min(100, Math.max(0, pct));
@@ -104,6 +109,7 @@ export function projectStatus(p: Project): ProjectStatus {
 
 export function startsInLabel(p: Project): string {
   const d = p.startOffset;
+  if (d === null) return "No start date";
   if (d <= 0) return "Not started yet";
   return d === 1 ? "Starts tomorrow" : `Starts in ${d} days`;
 }
@@ -115,8 +121,14 @@ export type WorkloadKind = "overdue" | "blocked" | "soon" | "later";
 export function workloadKind(t: Task): WorkloadKind {
   const b = taskBucket(t);
   if (b === "overdue" || b === "blocked") return b;
-  return t.dueOffset <= 7 ? "soon" : "later";
+  return dateOffset(t) <= 7 ? "soon" : "later";
 }
+
+/** Days to the date a task is grouped by: its deadline, or its work date when it has none. */
+export const dateOffset = (t: Task) => t.dueOffset ?? t.workOffset;
+
+/** Sort by task date (deadline, or work date when there is none), earliest first. */
+export const byDue = (a: Task, b: Task) => dateOffset(a) - dateOffset(b);
 
 export interface WorkloadPerson extends Member {
   open: WorkloadKind[];
@@ -143,8 +155,8 @@ export interface DecisionItem {
   name: string;
   decision: string;
   status: ProjectStatus;
-  lead: string;
-  endOffset: number;
+  lead: string; // "" = no lead (optional)
+  endOffset: number | null; // null = no deadline
 }
 
 export const emptySummary: Summary = {
@@ -177,7 +189,7 @@ export interface KeyDate {
   key: string;
   offset: number;
   title: string;
-  lead: string;
+  lead: string; // "" = no lead (optional)
   projectId: string;
 }
 
@@ -190,15 +202,20 @@ export type TaskBucket = "overdue" | "today" | "blocked" | "upcoming" | "done";
 export function taskBucket(t: Task): TaskBucket {
   if (t.state === "done") return "done";
   if (t.state === "blocked") return "blocked";
-  if (t.dueOffset < 0) return "overdue";
-  if (t.dueOffset === 0) return "today";
+  const d = dateOffset(t);
+  if (d < 0) return "overdue";
+  if (d === 0) return "today";
   return "upcoming";
 }
 
 export function dueLabel(t: Task): string {
-  if (t.state === "done") return "Done";
+  if (t.state === "done") return "Completed";
   if (t.state === "blocked") return "Blocked";
   const d = t.dueOffset;
+  if (d === null) {
+    const w = t.workOffset;
+    return w === 0 ? "Today's work" : w < 0 ? `Work date ${-w} day${w === -1 ? "" : "s"} ago` : `Work date in ${w} days`;
+  }
   if (d < 0) return `${-d} day${d === -1 ? "" : "s"} overdue`;
   if (d === 0) return "Due today";
   if (d === 1) return "Due tomorrow";
@@ -274,6 +291,8 @@ export interface DailyUpdate {
   sharedAt: string; // ISO timestamp
   reviewStatus: ReviewStatus;
   feedback: Feedback[];
+  fromTasks: boolean; // built from logged tasks rather than shared by hand
+  taskCount: number; // tasks behind this update (their items are merged into the lists above)
 }
 
 export interface DecisionRecord {
@@ -286,9 +305,9 @@ export interface DecisionRecord {
   recordedAt: string; // ISO timestamp when it was saved
   // Snapshot of the project when the decision was made
   projectName: string;
-  lead: string;
+  lead: string; // "" = no lead (optional)
   health: ProjectStatus;
-  deadline: string; // YYYY-MM-DD project deadline at the time
+  deadline: string | null; // YYYY-MM-DD project deadline at the time; null = it had none
   context: string; // e.g. "71% done with 92% of the time used"
   activityId: number | null; // the activity entry written when it was recorded (needed to undo it)
 }

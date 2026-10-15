@@ -164,11 +164,17 @@ function UpdatePanel({
               )}
             </div>
             <p className="mt-0.5 text-sm text-muted">
-              <span className="font-semibold text-ink">{project.name}</span> · {update.employeeName} · shared {time(update.sharedAt)}
+              <span className="font-semibold text-ink">{project.name}</span> · {update.employeeName} ·{" "}
+              {update.fromTasks ? `logged from tasks ${time(update.sharedAt)}` : `shared ${time(update.sharedAt)}`}
             </p>
             <div className="mt-2 flex flex-wrap items-center gap-2">
               <StatusDot status={update.status} />
               <ReviewBadge status={update.reviewStatus} />
+              {update.taskCount > 0 && (
+                <span className="inline-flex whitespace-nowrap rounded-full border border-st-blue/40 px-2 py-0.5 text-xs font-semibold text-st-blue">
+                  From {update.taskCount} task{update.taskCount === 1 ? "" : "s"}
+                </span>
+              )}
             </div>
           </div>
           <button
@@ -204,7 +210,7 @@ function UpdatePanel({
 
       <div ref={bodyRef} className="flex-1 overflow-y-auto px-5 pb-6">
         <div className="rounded-b-lg">
-          <Section title="Work completed today" items={update.completed} empty="Nothing listed as completed." />
+          <Section title={update.date === today ? "Work completed today" : "Work completed"} items={update.completed} empty="Nothing listed as completed." />
           <Section title="Work in progress" items={update.inProgress} empty="Nothing listed in progress." />
           <Section title="Next steps / pending work" items={update.nextSteps} empty="No next steps listed." />
           <Section title="Blockers or challenges" items={update.blockers} empty="No blockers reported." />

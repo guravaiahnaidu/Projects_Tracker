@@ -21,7 +21,7 @@ def _projects():
 
 
 def _tasks():
-    return list(Task.objects.select_related("project", "owner").order_by("due_date", "id"))
+    return sorted(Task.objects.select_related("project", "owner"), key=task_rules.sort_key)
 
 
 def summary(on) -> dict:
@@ -104,9 +104,9 @@ def key_dates(on, within_days=KEY_DATE_DAYS) -> list:
     for p in _projects():
         end = project_rules.end_offset(p, on)
         start = project_rules.start_offset(p, on)
-        if 0 <= end <= within_days:
+        if end is not None and 0 <= end <= within_days:
             rows.append(("end", p, end))
-        if 0 < start <= within_days:
+        if start is not None and 0 < start <= within_days:
             rows.append(("start", p, start))
     rows.sort(key=lambda r: r[2])
     return [
@@ -115,7 +115,7 @@ def key_dates(on, within_days=KEY_DATE_DAYS) -> list:
             "date": (on + timedelta(days=offset)).isoformat(),
             "offset": offset,
             "title": f"{p.name} deadline" if kind == "end" else f"{p.name} starts",
-            "lead": p.lead.name,
+            "lead": p.lead.name if p.lead else "",
             "project_id": p.id,
         }
         for kind, p, offset in rows
@@ -149,15 +149,15 @@ def team_workload(on) -> list:
 
 def decisions(on) -> list:
     rows = [p for p in _projects() if p.decision.strip()]
-    rows.sort(key=lambda p: (project_rules.HEALTH_RANK[project_rules.health(p, on)], p.end_date))
+    rows.sort(key=lambda p: (project_rules.HEALTH_RANK[project_rules.health(p, on)], p.end_date is None, p.end_date or on))
     return [
         {
             "project_id": p.id,
             "name": p.name,
             "decision": p.decision,
             "health": project_rules.health(p, on),
-            "lead": p.lead.name,
-            "end_date": p.end_date.isoformat(),
+            "lead": p.lead.name if p.lead else "",
+            "end_date": p.end_date.isoformat() if p.end_date else None,
             "end_offset": project_rules.end_offset(p, on),
         }
         for p in rows
@@ -173,11 +173,13 @@ def weekly_brief(on) -> dict:
     at_risk = [p for p in projects if health[p.id] in ("off-track", "watch")]
     at_risk.sort(key=lambda p: 0 if health[p.id] == "off-track" else 1)
     late = [t for t in tasks if task_rules.group(t, on) in ("overdue", "blocked")]
-    late.sort(key=lambda t: (0 if task_rules.group(t, on) == "overdue" else 1, t.due_date))
+    late.sort(key=lambda t: (0 if task_rules.group(t, on) == "overdue" else 1, *task_rules.sort_key(t)))
     stretched = list(Member.objects.filter(load__gt=100).order_by("-load"))
     decision_rows = decisions(on)
     due_in_week = sum(
-        1 for t in tasks if t.state != "done" and 0 <= task_rules.due_offset(t, on) <= DUE_SOON_DAYS
+        1
+        for t in tasks
+        if t.state != "done" and (d := task_rules.due_offset(t, on)) is not None and 0 <= d <= DUE_SOON_DAYS
     )
     return {
         "generated_on": on.isoformat(),

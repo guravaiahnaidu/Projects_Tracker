@@ -62,7 +62,7 @@ class TaskAudit(AuditCase):
         self.probe("POST", L, "valid", "creates with defaults, trims, persists, logs", create)
         self.probe("POST", L, "valid", "explicit priority/state accepted", lambda: (lambda r: (self.expect(r, 201), self.assertEqual((r.data["priority"], r.data["state"]), ("High", "in-progress"))))(self.post(L, self.body(priority="High", state="in-progress")))[0])
         self.probe("POST", L, "business-rule", "blocked without note -> 400; with note -> 201", lambda: (self.envelope(self.post(L, self.body(state="blocked")), 400), self.expect(self.post(L, self.body(state="blocked", note="why")), 201))[0])
-        for field in ("title", "project_id", "owner_id", "due_date"):
+        for field in ("title", "project_id", "owner_id"):  # due_date is optional
             self.bad("POST", L, L, {k: v for k, v in self.body().items() if k != field}, name=f"missing {field}")
         for extra in ({"title": "  "}, {"title": "x" * 301}, {"project_id": 999999}, {"owner_id": 999999}, {"project_id": "abc"}, {"due_date": "tomorrow"}, {"due_date": ""}, {"priority": "Urgent"}, {"state": "paused"}, {"note": "n" * 2001}, {"title": ["a"]}):
             self.bad("POST", L, L, self.body(**extra))
@@ -136,7 +136,7 @@ class TaskAudit(AuditCase):
             t = self.task(project=self.proj, owner=self.lead, title="bye")
             self.expect(self.delete(f"/tasks/{t.id}/"), 204)
             self.assertFalse(Task.objects.filter(pk=t.id).exists())
-            self.assertTrue(ActivityLog.objects.filter(action="task.deleted", entity_id=t.id).exists())
+            self.assertEqual(list(ActivityLog.objects.filter(entity_type="task", entity_id=t.id).values_list("action", flat=True)), ["task.deleted"])
             self.assertEqual(self.delete(f"/tasks/{t.id}/").status_code, 404)
             return "204 then 404"
 

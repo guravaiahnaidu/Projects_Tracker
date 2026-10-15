@@ -190,6 +190,7 @@ export function DateField({
   value,
   onChange,
   min,
+  max,
   invalid = false,
   describedBy,
   onBlur,
@@ -198,6 +199,7 @@ export function DateField({
   value: string; // YYYY-MM-DD or ""
   onChange: (iso: string, typed: boolean) => void;
   min?: string;
+  max?: string;
   invalid?: boolean;
   describedBy?: string;
   onBlur?: () => void;
@@ -267,6 +269,7 @@ export function DateField({
         tabIndex={-1}
         aria-hidden
         min={min}
+        max={max}
         value={value}
         onChange={(e) => {
           setText(isoToDmy(e.target.value));

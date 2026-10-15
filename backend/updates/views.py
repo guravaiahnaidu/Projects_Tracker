@@ -12,6 +12,14 @@ from common.params import OFFSET_MAX, parse_id, parse_int
 
 from .models import DailyUpdate, Feedback, ReviewStatus
 from .serializers import DailyUpdateEditSerializer, DailyUpdateWriteSerializer, FeedbackSerializer, update_payload
+from .tasklink import tasks_by_key
+
+
+def _payloads(updates) -> list:
+    """Payloads for many updates, fetching all their tasks in one query."""
+    updates = list(updates)
+    found = tasks_by_key(updates)
+    return [update_payload(u, found.get((u.employee_id, u.project_id, u.date), [])) for u in updates]
 
 DUPLICATE_MESSAGE = "An update from this person for this project and day already exists. Edit it instead."
 
@@ -58,12 +66,12 @@ class DailyUpdateListView(APIView):
         q = params.get("q", "").strip().lower()
         if not q:
             total = qs.count()
-            rows = [update_payload(u) for u in qs[offset : offset + limit]]
+            rows = _payloads(qs[offset : offset + limit])
         else:
             # Text lives in JSON lists, which SQL LIKE cannot search portably: match in Python, then cut the page.
             matches = [
                 r
-                for r in map(update_payload, qs)
+                for r in _payloads(qs)
                 if q in " ".join([r["project_name"], r["employee_name"], r["notes"], *r["completed"], *r["in_progress"], *r["next_steps"], *r["blockers"]]).lower()
             ]
             total = len(matches)

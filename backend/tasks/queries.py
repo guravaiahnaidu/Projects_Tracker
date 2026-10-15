@@ -10,6 +10,13 @@ from .models import Priority, State, Task
 from .rules import ALL_GROUPS
 
 
+def _on_date(**lookups) -> Q:
+    """Match on the task date (rules.task_date): the deadline, or the work date when there is none."""
+    by_due = Q(**{f"due_date__{k}": v for k, v in lookups.items()})
+    by_work = Q(due_date__isnull=True, **{f"work_date__{k}": v for k, v in lookups.items()})
+    return by_due | by_work
+
+
 def group_q(group: str, on: date) -> Q:
     """The ORM equivalent of tasks.rules.group()."""
     open_ = ~Q(state__in=[State.DONE, State.BLOCKED])
@@ -18,15 +25,15 @@ def group_q(group: str, on: date) -> Q:
     if group == "blocked":
         return Q(state=State.BLOCKED)
     if group == "overdue":
-        return open_ & Q(due_date__lt=on)
+        return open_ & _on_date(lt=on)
     if group == "today":
-        return open_ & Q(due_date=on)
+        return open_ & _on_date(exact=on)
     if group == "next2":
-        return open_ & Q(due_date__gt=on, due_date__lte=on + timedelta(days=2))
+        return open_ & _on_date(gt=on, lte=on + timedelta(days=2))
     if group == "week":
-        return open_ & Q(due_date__gt=on + timedelta(days=2), due_date__lte=on + timedelta(days=7))
+        return open_ & _on_date(gt=on + timedelta(days=2), lte=on + timedelta(days=7))
     if group == "later":
-        return open_ & Q(due_date__gt=on + timedelta(days=7))
+        return open_ & _on_date(gt=on + timedelta(days=7))
     raise ValueError(group)
 
 
@@ -56,7 +63,7 @@ def filter_tasks(queryset, params, on: date):
 
     if priority := params.get("priority"):
         if priority not in Priority.values:
-            return queryset, "priority must be High, Medium or Low."
+            return queryset, "priority must be Critical, High, Medium or Low."
         queryset = queryset.filter(priority=priority)
 
     if group := params.get("group"):
@@ -64,7 +71,12 @@ def filter_tasks(queryset, params, on: date):
             return queryset, f"group must be one of {', '.join(ALL_GROUPS)}."
         queryset = queryset.filter(group_q(group, on))
 
-    for param, lookup in (("due_from", "due_date__gte"), ("due_to", "due_date__lte")):
+    for param, lookup in (
+        ("due_from", "due_date__gte"),
+        ("due_to", "due_date__lte"),
+        ("work_from", "work_date__gte"),
+        ("work_to", "work_date__lte"),
+    ):
         if value := params.get(param):
             try:
                 queryset = queryset.filter(**{lookup: date.fromisoformat(value)})

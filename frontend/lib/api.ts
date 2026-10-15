@@ -1,11 +1,7 @@
 // Centralised client for the Django REST backend. Every network call in the UI goes through here.
 // API_BASE_URL includes the backend's /api prefix; paths below are relative to it (e.g. "/members/" -> /api/members/).
 
-<<<<<<< HEAD
-import type { EmploymentType, MemberStatus } from "./data";
-=======
 import type { EmploymentType, MemberStatus, ProjectPhase, ProjectPriority } from "./data";
->>>>>>> 168618b (Update frontend and backend functionality)
 
 export const API_BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000/api").replace(/\/+$/, "");
 
@@ -115,15 +111,15 @@ export interface ApiProject {
   name: string;
   department: string;
   client?: string;
-  lead: number;
+  lead: number | null;
   lead_name: string;
   phase: string;
   priority?: string;
   description: string;
-  start_date: string;
-  end_date: string;
-  start_offset?: number; // not used by the UI: offsets are derived from the dates and the server's today
-  end_offset?: number;
+  start_date: string | null;
+  end_date: string | null;
+  start_offset?: number | null; // not used by the UI: offsets are derived from the dates and the server's today
+  end_offset?: number | null;
   progress: number;
   decision: string;
   objectives?: { id: number; description: string }[];
@@ -137,8 +133,9 @@ export interface ApiTask {
   project_name: string;
   owner: number;
   owner_name: string;
-  due_date: string;
-  due_offset?: number; // not used by the UI
+  work_date: string;
+  due_date: string | null;
+  due_offset?: number | null; // not used by the UI
   state: string;
   priority: string;
   note: string;
@@ -196,7 +193,7 @@ export interface ApiDecision {
   decision: string;
   health: string;
   lead: string;
-  end_offset: number;
+  end_offset: number | null; // null = the project has no deadline
 }
 
 export interface ApiBrief {
@@ -235,6 +232,8 @@ export interface ApiDailyUpdate {
   review_status: string;
   shared_at: string;
   feedback: ApiFeedback[];
+  from_tasks?: boolean; // created automatically from the employee's tasks for that project and day
+  tasks?: { id: number; title: string; state: string; priority: string }[];
 }
 
 export interface ApiDecisionRecord {
@@ -248,7 +247,7 @@ export interface ApiDecisionRecord {
   project_name: string;
   lead: string;
   health: string;
-  deadline: string;
+  deadline: string | null;
   context: string;
   activity_id: number | null;
 }
@@ -283,10 +282,10 @@ export interface MemberInput {
 export interface ProjectInput {
   name: string;
   department?: string;
-  client: string;
-  lead_id: number;
-  start_date: string;
-  end_date: string;
+  client?: string;
+  lead_id?: number | null;
+  start_date?: string | null;
+  end_date?: string | null;
   phase?: ProjectPhase; // omitted: the server derives it from the start date
   priority?: ProjectPriority;
   description?: string;
@@ -299,9 +298,9 @@ export interface ProjectPatch {
   department?: string;
   description?: string;
   phase?: string;
-  lead_id?: number;
-  start_date?: string;
-  end_date?: string;
+  lead_id?: number | null;
+  start_date?: string | null;
+  end_date?: string | null;
   progress?: number;
   decision?: string;
 }
@@ -310,14 +309,18 @@ export interface TaskInput {
   title: string;
   project_id: number;
   owner_id: number;
-  due_date: string;
+  work_date: string;
+  due_date: string | null;
   priority?: string;
+  state?: string;
+  note?: string;
 }
 
 export interface TaskPatch {
   title?: string;
   owner_id?: number;
-  due_date?: string;
+  work_date?: string;
+  due_date?: string | null;
   priority?: string;
   state?: string;
   note?: string;

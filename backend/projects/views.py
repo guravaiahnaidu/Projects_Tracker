@@ -49,12 +49,16 @@ def detail_response(pk, status=200):
 
 
 def _set_lead_membership(project: Project, new_lead, old_lead):
-    """Lead rules: old lead stays on the team as a regular member; new lead becomes Project Lead."""
-    if old_lead.pk != new_lead.pk:
+    """Lead rules: old lead stays on the team as a regular member; new lead becomes Project Lead.
+
+    Either may be None (the project has no lead before or after the change).
+    """
+    if old_lead is not None and (new_lead is None or old_lead.pk != new_lead.pk):
         ProjectMember.objects.filter(project=project, member=old_lead).update(role=DEFAULT_ROLE)
-    ProjectMember.objects.update_or_create(
-        project=project, member=new_lead, defaults={"role": LEAD_ROLE}
-    )
+    if new_lead is not None:
+        ProjectMember.objects.update_or_create(
+            project=project, member=new_lead, defaults={"role": LEAD_ROLE}
+        )
 
 
 class ProjectListView(APIView):
@@ -73,13 +77,13 @@ class ProjectListView(APIView):
 
         sort = params.get("sort", "attention")
         if sort == "deadline":
-            rows.sort(key=lambda r: r["end_date"])
+            rows.sort(key=lambda r: (r["end_date"] is None, r["end_date"] or ""))  # no deadline last
         elif sort == "progress":
             rows.sort(key=lambda r: -r["progress"])
         elif sort == "name":
             rows.sort(key=lambda r: r["name"].lower())
         elif sort == "attention":
-            rows.sort(key=lambda r: (rules.HEALTH_RANK[r["health"]], r["end_date"]))
+            rows.sort(key=lambda r: (rules.HEALTH_RANK[r["health"]], r["end_date"] is None, r["end_date"] or ""))
         else:
             raise ValidationError({"sort": "sort must be attention, deadline, progress or name."})
         return Response({"results": rows, "count": len(rows)})
@@ -90,10 +94,12 @@ class ProjectListView(APIView):
         ser.is_valid(raise_exception=True)
         data = ser.validated_data
         if "phase" not in data:
-            data["phase"] = Phase.NOT_STARTED if data["start_date"] > rules.today() else Phase.IN_PROGRESS
+            start = data["start_date"]
+            data["phase"] = Phase.PLANNING if start is None else Phase.NOT_STARTED if start > rules.today() else Phase.IN_PROGRESS
         project = Project.objects.create(progress=0, **data)
-        ProjectMember.objects.create(project=project, member=project.lead, role=LEAD_ROLE)
-        log("project.created", "project", project.id, f"You created {project.name} for {project.client}", project=project)
+        if project.lead:
+            ProjectMember.objects.create(project=project, member=project.lead, role=LEAD_ROLE)
+        log("project.created", "project", project.id, f"You created {project.name}" + (f" for {project.client}" if project.client else ""), project=project)
         return detail_response(project.pk, status=201)
 
 
@@ -114,23 +120,32 @@ class ProjectDetailView(APIView):
             events.append(("project.renamed", f"You renamed {project.name} to {data['name']}"))
             name = data["name"]
         if "department" in data and data["department"] != project.department:
-            events.append(("project.updated", f"You moved {name} to the {data['department']} department"))
+            events.append(("project.updated", f"You changed the domain of {name} to {data['department']}"))
         if "client" in data and data["client"] != project.client:
-            events.append(("project.updated", f"You changed the client of {name} to {data['client']}"))
+            events.append(
+                ("project.updated", f"You changed the client of {name} to {data['client']}" if data["client"] else f"You removed the client of {name}")
+            )
         if "priority" in data and data["priority"] != project.priority:
             events.append(("project.priority", f"You changed the priority of {name} from {project.priority} to {data['priority']}"))
         if "description" in data and data["description"] != project.description:
             events.append(("project.updated", f"You updated the description of {name}"))
         if "phase" in data and data["phase"] != project.phase:
             events.append(("project.phase", f"You changed {name} from {project.phase} to {data['phase']}"))
-        if "lead" in data and data["lead"].pk != project.lead_id:
-            events.append(
-                ("project.lead", f"You changed the project lead from {project.lead.name} to {data['lead'].name}")
-            )
+        new_lead_id = data["lead"].pk if data.get("lead") else None
+        if "lead" in data and new_lead_id != project.lead_id:
+            if project.lead is None:
+                text = f"You made {data['lead'].name} the project lead of {name}"
+            elif data["lead"] is None:
+                text = f"You removed {project.lead.name} as the project lead of {name}"
+            else:
+                text = f"You changed the project lead from {project.lead.name} to {data['lead'].name}"
+            events.append(("project.lead", text))
         if "start_date" in data and data["start_date"] != project.start_date:
-            events.append(("project.start", f"You moved the start date to {fmt_date(data['start_date'])}"))
+            text = f"You moved the start date to {fmt_date(data['start_date'])}" if data["start_date"] else "You removed the start date"
+            events.append(("project.start", text))
         if "end_date" in data and data["end_date"] != project.end_date:
-            events.append(("project.deadline", f"You moved the deadline to {fmt_date(data['end_date'])}"))
+            text = f"You moved the deadline to {fmt_date(data['end_date'])}" if data["end_date"] else "You removed the deadline"
+            events.append(("project.deadline", text))
         if "progress" in data and data["progress"] != project.progress:
             events.append(
                 ("project.progress", f"You updated progress from {project.progress}% to {data['progress']}%")
@@ -147,7 +162,7 @@ class ProjectDetailView(APIView):
         if events:
             # Only the fields in this request are written, so a concurrent edit of a different field is not undone.
             project.save(update_fields=[*data.keys(), "updated_at"])
-            if project.lead_id != old_lead.pk:
+            if project.lead_id != (old_lead.pk if old_lead else None):
                 _set_lead_membership(project, project.lead, old_lead)
             for action, text in events:
                 log(action, "project", project.id, text, project=project)
@@ -163,7 +178,7 @@ class ProjectDetailView(APIView):
                 "Delete or finish them before deleting the project."
             )
         name, project_id = project.name, project.id
-        project.delete()  # memberships and objectives cascade; activity rows keep their text
+        project.delete()  # memberships and objectives cascade; its history is purged (activity.signals)
         log("project.deleted", "project", project_id, f"You deleted the project {name}")
         return Response(status=204)
 
@@ -317,7 +332,7 @@ class ProjectDecisionResolveView(APIView):
             notes=notes,
             decision_date=data.get("decision_date") or on,
             project_name=project.name,
-            lead_name=project.lead.name,
+            lead_name=project.lead.name if project.lead else "",
             health=rules.health(project, on),
             deadline=project.end_date,
             context=f"{project.progress}% done with {rules.time_used(project, on)}% of the time used",

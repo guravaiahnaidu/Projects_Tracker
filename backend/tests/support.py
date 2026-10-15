@@ -37,7 +37,7 @@ class ApiTestCase(APITestCase):
         project = project or self.project()
         owner = owner or project.lead
         return Task.objects.create(
-            title=title, project=project, owner=owner, due_date=day(due), state=state, note=note, **extra
+            title=title, project=project, owner=owner, due_date=None if due is None else day(due), state=state, note=note, **extra
         )
 
     def get(self, path, **params):
