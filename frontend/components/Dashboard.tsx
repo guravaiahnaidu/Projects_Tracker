@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { refreshData } from "@/lib/refresh";
 import { ensureLoaded, refresh as reload, useStore } from "@/lib/store";
+import { SignOutButton } from "./AuthGate";
 import GlobalSearch, { type SearchTarget } from "./GlobalSearch";
 import Header, { type Tab } from "./Header";
 import Overview, { type NavTarget, type OpenRef, type OverviewFocus } from "./Overview";
@@ -154,6 +155,7 @@ export default function Dashboard() {
             <RefreshButton state={refreshState} onRefresh={doRefresh} />
           </>
         }
+        end={<SignOutButton />}
       />
       <main className="mx-auto w-full max-w-[1800px] flex-1 px-4 py-6 sm:px-8 lg:px-12">
         {!store.loaded && !store.error && (

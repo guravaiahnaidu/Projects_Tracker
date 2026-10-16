@@ -46,10 +46,12 @@ export default function Header({
   tab,
   onTab,
   actions,
+  end,
 }: {
   tab: Tab;
   onTab: (t: Tab) => void;
   actions?: ReactNode; // search and refresh controls
+  end?: ReactNode; // last item in the bar (sign out)
 }) {
   const today = useToday();
   const [theme, setTheme] = useTheme();
@@ -202,6 +204,7 @@ export default function Header({
               <span className="hidden min-[1240px]:inline">{compactDate}</span>
             </time>
           )}
+          {end}
         </div>
       </div>
     </header>

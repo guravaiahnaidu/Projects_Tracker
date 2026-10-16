@@ -52,7 +52,14 @@ def api_exception_handler(exc, context):
             message = fields["non_field_errors"][0]
         code = "validation_error"
     else:
-        message = str(getattr(exc, "detail", "Request failed."))
+        detail = getattr(exc, "detail", "Request failed.")
+        if isinstance(detail, dict):
+            # SimpleJWT's InvalidToken carries {"detail", "code", "messages": [{"message": "Token is expired"}, ...]}:
+            # report the specific reason, never the token class internals.
+            messages = detail.get("messages") or []
+            first = messages[0] if messages and isinstance(messages[0], dict) else {}
+            detail = first.get("message") or detail.get("detail", "Request failed.")
+        message = str(detail)
         code = getattr(exc, "default_code", "error")
 
     response.data = {"error": {"code": code, "message": message, "fields": fields}}

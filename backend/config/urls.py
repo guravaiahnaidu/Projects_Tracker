@@ -11,6 +11,7 @@ handler500 = "common.views.server_error"
 # URLs such as "/" or "/unknown/" get Django's standard HTML 404 page.
 urlpatterns = [
     path("admin/", admin.site.urls),
+    path("api/auth/", include("accounts.urls")),
     path("api/members/", include("members.urls")),
     path("api/projects/", include("projects.urls")),
     path("api/tasks/", include("tasks.urls")),

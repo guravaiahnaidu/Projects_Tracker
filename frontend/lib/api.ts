@@ -1,9 +1,17 @@
 // Centralised client for the Django REST backend. Every network call in the UI goes through here.
-// API_BASE_URL includes the backend's /api prefix; paths below are relative to it (e.g. "/members/" -> /api/members/).
+// The base URL includes the backend's /api prefix; paths below are relative to it (e.g. "/members/" -> /api/members/).
 
 import type { EmploymentType, MemberStatus, ProjectPhase, ProjectPriority } from "./data";
 
-export const API_BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000/api").replace(/\/+$/, "");
+const CONFIGURED_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/+$/, "");
+
+/** Without NEXT_PUBLIC_API_BASE_URL, the backend on port 8000 of the SAME host name as the page: the sign-in cookie is
+ *  SameSite=Strict, and localhost / 127.0.0.1 count as different sites, so a mismatch would break staying signed in. */
+function apiBase(): string {
+  if (CONFIGURED_BASE_URL) return CONFIGURED_BASE_URL;
+  if (typeof window !== "undefined") return `${window.location.protocol}//${window.location.hostname}:8000/api`;
+  return "http://127.0.0.1:8000/api";
+}
 
 export class ApiError extends Error {
   status: number; // 0 = the server could not be reached
@@ -33,14 +41,20 @@ function qs(query?: Query) {
   return s ? `?${s}` : "";
 }
 
-async function request<T>(method: string, path: string, body?: unknown, query?: Query): Promise<T> {
+/** One HTTP round trip. `withCookie` is used only by the /auth/ endpoints, which read and set the refresh cookie;
+ *  data requests carry the access token in the Authorization header instead. */
+async function send<T>(method: string, path: string, body?: unknown, query?: Query, withCookie = false): Promise<T> {
+  const headers: Record<string, string> = {};
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+  if (accessToken && !withCookie) headers.Authorization = `Bearer ${accessToken}`;
   let res: Response;
   try {
-    res = await fetch(`${API_BASE_URL}${path}${qs(query)}`, {
+    res = await fetch(`${apiBase()}${path}${qs(query)}`, {
       method,
-      headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
+      headers,
       body: body !== undefined ? JSON.stringify(body) : undefined,
       cache: "no-store",
+      credentials: withCookie ? "include" : "same-origin",
     });
   } catch {
     throw new ApiError(0, "Cannot reach the server. Check that the backend is running and try again.", "network_error");
@@ -65,6 +79,108 @@ async function request<T>(method: string, path: string, body?: unknown, query?: 
   }
   if (data === null) throw new ApiError(res.status, "The server sent a response that could not be read.", "bad_response");
   return data as T;
+}
+
+/** Codes the backend uses when the access token is missing, expired or no longer valid. */
+const SIGN_IN_CODES = new Set(["token_not_valid", "not_authenticated", "authentication_failed"]);
+
+async function request<T>(method: string, path: string, body?: unknown, query?: Query): Promise<T> {
+  try {
+    return await send<T>(method, path, body, query);
+  } catch (e) {
+    if (!(e instanceof ApiError) || e.status !== 401 || !SIGN_IN_CODES.has(e.code)) throw e;
+    // The access token expired (or was never sent): renew it once from the refresh cookie and repeat the request.
+    // A 401 is returned before the backend runs the view, so repeating a POST cannot apply it twice.
+    if (!(await refreshSession())) {
+      if (typeof window !== "undefined") window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
+      throw e;
+    }
+    return send<T>(method, path, body, query);
+  }
+}
+
+/* ---------- Session (JWT, managers only) ----------
+   The access token is kept in this module's memory only (never localStorage), so a page reload starts without one and
+   restores it from the refresh token. The refresh token is an HttpOnly cookie that only the backend can read; it is
+   sent to /api/auth/ and nowhere else. */
+
+export interface SessionUser {
+  id: number;
+  username: string;
+  email: string;
+  role: "admin" | "manager";
+  is_staff: boolean;
+  is_superuser: boolean;
+  groups: string[];
+}
+
+interface SessionResponse {
+  access: string;
+  token_type: "Bearer";
+  access_expires_in: number;
+  user: SessionUser;
+}
+
+/** Fired on window when the session can no longer be renewed (signed out elsewhere, expired, or revoked). */
+export const SESSION_EXPIRED_EVENT = "session-expired";
+
+let accessToken: string | null = null;
+let sessionUser: SessionUser | null = null;
+let renewing: Promise<SessionUser | null> | null = null;
+
+function startSession(s: SessionResponse): SessionUser {
+  accessToken = s.access;
+  sessionUser = s.user;
+  return s.user;
+}
+
+function endSession() {
+  accessToken = null;
+  sessionUser = null;
+}
+
+export const getSessionUser = () => sessionUser;
+
+/** A new access token from the refresh cookie, or null when there is no valid session. Concurrent callers share one
+ *  request: the backend rotates the refresh token on every use, so two parallel refreshes would revoke each other. */
+export function refreshSession(): Promise<SessionUser | null> {
+  renewing ??= (async () => {
+    try {
+      for (let attempt = 1; ; attempt++) {
+        try {
+          return startSession(await send<SessionResponse>("POST", "/auth/refresh/", undefined, undefined, true));
+        } catch (e) {
+          if (!(e instanceof ApiError) || e.status !== 401) throw e; // network or server trouble: not a sign-out
+          // Another open tab may have rotated the shared cookie a moment ago; one short retry picks up the new one.
+          if (attempt === 1) {
+            await new Promise((r) => setTimeout(r, 400));
+            continue;
+          }
+          endSession();
+          return null;
+        }
+      }
+    } finally {
+      renewing = null;
+    }
+  })();
+  return renewing;
+}
+
+/** The signed-in user, restoring the session from the refresh cookie after a page load. */
+export function restoreSession(): Promise<SessionUser | null> {
+  return sessionUser ? Promise.resolve(sessionUser) : refreshSession();
+}
+
+export async function signIn(username: string, password: string): Promise<SessionUser> {
+  return startSession(await send<SessionResponse>("POST", "/auth/login/", { username, password }, undefined, true));
+}
+
+/** Revokes the refresh token on the server and clears the cookie. Throws if the server could not be reached, so the
+ *  caller can say so instead of pretending the session ended. */
+export async function signOut(): Promise<void> {
+  await send<void>("POST", "/auth/logout/", undefined, undefined, true);
+  endSession();
 }
 
 const get = <T>(path: string, query?: Query) => request<T>("GET", path, undefined, query);

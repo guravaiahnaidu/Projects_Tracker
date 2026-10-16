@@ -41,3 +41,13 @@ class ReadRateThrottle(_MethodRateThrottle):
 
     def applies(self, request) -> bool:
         return request.method in SAFE
+
+
+class LoginRateThrottle(_MethodRateThrottle):
+    """Sign-in attempts per client (default 10 per minute, DJANGO_THROTTLE_LOGIN), on top of the write limit, to slow
+    password guessing."""
+
+    scope = "login"
+
+    def applies(self, request) -> bool:
+        return request.method == "POST"

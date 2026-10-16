@@ -557,7 +557,7 @@ export function NewTaskForm({
   const problems: Partial<Record<TaskField, string>> = {
     title: !title.trim() ? "Give the task a name." : "",
     project: !projectId ? "Choose a project." : "",
-    owner: !owner ? "Choose who owns this task." : "",
+    owner: !owner ? "Choose the employee to assign this task to." : "",
     work: workDateProblem(workDate, workTyped),
     due: dueTyped ? "Enter the due date as dd-mm-yyyy, or leave it empty." : "",
     note: state === "blocked" ? blockedNoteProblem(note) : note.trim().length > NOTE_MAX_LENGTH ? BLOCKED_NOTE_TOO_LONG : "",
@@ -668,7 +668,7 @@ export function NewTaskForm({
         </div>
         <div>
           <label htmlFor="nt-owner" className={label}>
-            Owner{req}
+            Employee Name{req}
           </label>
           <Combobox
             id="nt-owner"
@@ -1044,7 +1044,7 @@ export function TasksView({
             </option>
           ))}
         </select>
-        <select value={owner} onChange={(e) => setOwner(e.target.value)} aria-label="Owner" className={`${control} w-40`}>
+        <select value={owner} onChange={(e) => setOwner(e.target.value)} aria-label="Employee name" className={`${control} w-40`}>
           <option value="all">Everyone</option>
           {owners.map((o) => (
             <option key={o}>{o}</option>

@@ -9,8 +9,10 @@ import json
 import os
 import re
 
+from django.contrib.auth import get_user_model
 from django.urls import get_resolver
 from rest_framework.views import APIView
+from rest_framework_simplejwt.tokens import AccessToken
 
 from tests.audit_support import RESULTS, AuditCase, key
 from tests.support import API, day
@@ -44,6 +46,8 @@ class GlobalAudit(AuditCase):
         self.proj = self.project(lead=self.lead, name="Alpha")
         self.tsk = self.task(project=self.proj, owner=self.lead)
         self.upd = DailyUpdate.objects.create(employee=self.lead, project=self.proj, date=day(0), completed=["x"])
+        manager = get_user_model().objects.create_user("audit-manager", is_staff=True)
+        self.manager_auth = f"Bearer {AccessToken.for_user(manager)}"
 
     def concrete(self, tmpl):
         ids = {"<id>": None, "<member_id>": self.lead.id, "<objective_id>": 1}
@@ -62,7 +66,8 @@ class GlobalAudit(AuditCase):
             def unsupported(denied=denied, url=url):
                 seen = []
                 for m in denied:
-                    res = self.client.generic(m, f"{API}{url}", "{}", content_type="application/json")
+                    # Signed in as a manager, so endpoints that always need a token (/auth/me/) reach the method check.
+                    res = self.client.generic(m, f"{API}{url}", "{}", content_type="application/json", HTTP_AUTHORIZATION=self.manager_auth)
                     self.assertEqual(res.status_code, 405, f"{m} -> {res.status_code}")
                     self.assertTrue(res.json()["error"]["message"], "no JSON error body")
                     self.assertIn("Allow", res, "405 without Allow header")
@@ -72,16 +77,18 @@ class GlobalAudit(AuditCase):
             for m in allowed:
                 self.probe(m, tmpl, "unsupported-method", "other methods -> 405 JSON envelope with Allow header", unsupported)
 
-            # Credentials: the API defines no authentication, so any Authorization header is simply ignored.
+            # Credentials: a Bearer token, when sent, is always checked. Without one the data API is open while
+            # DJANGO_API_REQUIRE_AUTH is off (the default); accounts/tests.py covers the switch turned on.
             probe_method = "GET" if "GET" in allowed else None
             if probe_method:
-                def ignores_credentials(url=url):
+                def checks_credentials(url=url):
                     anon = self.client.get(f"{API}{url}").status_code
-                    with_header = self.client.get(f"{API}{url}", HTTP_AUTHORIZATION="Bearer not-a-real-token").status_code
-                    self.assertEqual(anon, with_header)
-                    return f"{anon} without credentials; {with_header} with an invalid token"
+                    res = self.client.get(f"{API}{url}", HTTP_AUTHORIZATION="Bearer not-a-real-token")
+                    self.assertEqual(res.status_code, 401)
+                    self.assertEqual(res.json()["error"]["code"], "token_not_valid")
+                    return f"{anon} without credentials; 401 with an invalid token"
 
-                self.probe("GET", tmpl, "authz-open", "OPEN: no authentication/permission classes; credentials neither required nor checked", ignores_credentials)
+                self.probe("GET", tmpl, "authz", "invalid Bearer token -> 401; no token -> open unless DJANGO_API_REQUIRE_AUTH", checks_credentials)
 
     def test_content_types(self):
         targets = [

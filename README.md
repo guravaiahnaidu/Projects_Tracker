@@ -25,7 +25,8 @@ python manage.py runserver
 `python manage.py ...` runs in **development** mode (debug on, localhost only, CORS for `localhost:3000`).
 Anything else that loads the settings (gunicorn, uvicorn, wsgi/asgi) runs in **production** mode and
 **refuses to start** unless `DJANGO_SECRET_KEY` (random, 50+ characters), `DJANGO_ALLOWED_HOSTS`,
-`CORS_ALLOWED_ORIGINS` (https only) and `DJANGO_ACKNOWLEDGE_NO_AUTH=true` are set. See `backend/.env.example`.
+`CORS_ALLOWED_ORIGINS` (https only) and either `DJANGO_API_REQUIRE_AUTH=true` or `DJANGO_ACKNOWLEDGE_NO_AUTH=true`
+are set. See `backend/.env.example`.
 `DJANGO_TIME_ZONE` (default `Asia/Kolkata`) decides what "today" means for overdue / due-today logic; the frontend
 follows the server's time zone, not the browser's.
 
@@ -61,5 +62,18 @@ The full endpoint, field and validation reference is in `empty.txt`.
 
 ## Security status
 
-There is **no login yet**: every endpoint is open, including delete. Run it on a trusted network only. A proposed
-authentication and role design is documented in `empty.txt` (Part D) and needs approval before it is built.
+The backend has JWT sign-in for **managers only** (active Django users with `is_staff`; superusers get the role
+`admin`). Employees have no login. Create a manager with `python manage.py createsuperuser`, or in `/admin/` tick
+"Staff status" on a user.
+
+- `POST /api/auth/login/` `{"username", "password"}` returns `{"access", "token_type", "access_expires_in", "user"}`
+  and sets the refresh token in an HttpOnly cookie (`pt_refresh`, path `/api/auth/`, SameSite=Strict, Secure in production).
+- `POST /api/auth/refresh/` (cookie only) returns a new access token and rotates the cookie; the old one is blacklisted.
+- `POST /api/auth/logout/` blacklists the refresh token and clears the cookie (204).
+- `GET /api/auth/me/` (Bearer token) returns `id`, `username`, `email`, `role`, `is_staff`, `is_superuser`, `groups`.
+
+Send the access token as `Authorization: Bearer <token>`, keep it in memory only, and call the auth endpoints with
+`credentials: "include"`. Refresh and logout accept only requests from `CORS_ALLOWED_ORIGINS` (or no `Origin` header).
+
+**The data API is still open by default** (`DJANGO_API_REQUIRE_AUTH=false`) because the frontend has no login screen
+yet. Set `DJANGO_API_REQUIRE_AUTH=true` once it does; until then run it on a trusted network only.

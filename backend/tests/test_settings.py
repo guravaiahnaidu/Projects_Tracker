@@ -15,7 +15,8 @@ GOOD_KEY = "k8s-Zp3vQx9LmN2rT7wYb4HdF6gJ1cA5eU0oIiKsXn8Rt3yV2zPq"  # 50+ chars, 
 PROBE = (
     "import json, config.settings as s;"
     "print(json.dumps({k: getattr(s, k, None) for k in ('ENVIRONMENT','DEBUG','ALLOWED_HOSTS','CORS_ALLOWED_ORIGINS',"
-    "'SECURE_SSL_REDIRECT','SESSION_COOKIE_SECURE','CSRF_COOKIE_SECURE','SECURE_HSTS_SECONDS','SECURE_PROXY_SSL_HEADER')}))"
+    "'SECURE_SSL_REDIRECT','SESSION_COOKIE_SECURE','CSRF_COOKIE_SECURE','SECURE_HSTS_SECONDS','SECURE_PROXY_SSL_HEADER',"
+    "'API_REQUIRE_AUTH','JWT_REFRESH_COOKIE','CORS_ALLOW_CREDENTIALS')}))"
 )
 
 
@@ -67,7 +68,7 @@ class ProductionSettingsTests(unittest.TestCase):
         self.assert_refuses({}, "DJANGO_SECRET_KEY")
 
     def test_missing_or_weak_secret_key(self):
-        for key in (None, "", "short", "dev-only-insecure-key-change-me", "django-insecure-" + "x1y2z3" * 10, "a" * 60):
+        for key in (None, "", "short", "dev-only-insecure-key-change-me-never-use-in-production", "django-insecure-" + "x1y2z3" * 10, "a" * 60):
             env = {k: v for k, v in PROD.items() if k != "DJANGO_SECRET_KEY"}
             if key is not None:
                 env["DJANGO_SECRET_KEY"] = key
@@ -92,6 +93,24 @@ class ProductionSettingsTests(unittest.TestCase):
         env = {k: v for k, v in PROD.items() if k != "DJANGO_ACKNOWLEDGE_NO_AUTH"}
         self.assert_refuses(env, "DJANGO_ACKNOWLEDGE_NO_AUTH")
         self.assert_refuses({**PROD, "DJANGO_ACKNOWLEDGE_NO_AUTH": "false"}, "DJANGO_ACKNOWLEDGE_NO_AUTH")
+
+    def test_requiring_auth_replaces_the_no_auth_acknowledgement(self):
+        env = {k: v for k, v in PROD.items() if k != "DJANGO_ACKNOWLEDGE_NO_AUTH"}
+        result = load_settings({**env, "DJANGO_API_REQUIRE_AUTH": "true"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        s = json.loads(result.stdout)
+        self.assertTrue(s["API_REQUIRE_AUTH"])
+        self.assertTrue(s["JWT_REFRESH_COOKIE"]["secure"])  # always Secure in production
+        self.assertEqual(s["JWT_REFRESH_COOKIE"]["samesite"], "Strict")
+        self.assertTrue(s["CORS_ALLOW_CREDENTIALS"])
+
+    def test_jwt_configuration_is_validated(self):
+        self.assert_refuses({**PROD, "DJANGO_JWT_SIGNING_KEY": "short"}, "DJANGO_JWT_SIGNING_KEY")
+        self.assert_refuses({**PROD, "DJANGO_JWT_COOKIE_SAMESITE": "None"}, "DJANGO_JWT_COOKIE_SAMESITE")
+        for name in ("DJANGO_JWT_ACCESS_MINUTES", "DJANGO_JWT_REFRESH_HOURS"):
+            for value in ("0", "-5", "soon"):
+                with self.subTest(name=name, value=value):
+                    self.assert_refuses({**PROD, name: value}, name)
 
     def test_all_problems_are_reported_together(self):
         result = load_settings({"DJANGO_ENV": "production"})
@@ -122,6 +141,8 @@ class DevelopmentSettingsTests(unittest.TestCase):
         self.assertEqual(s["ALLOWED_HOSTS"], ["127.0.0.1", "localhost"])
         self.assertEqual(s["CORS_ALLOWED_ORIGINS"], ["http://localhost:3000", "http://127.0.0.1:3000"])
         self.assertIsNone(s["SECURE_SSL_REDIRECT"])  # production hardening is not applied in development
+        self.assertFalse(s["API_REQUIRE_AUTH"])  # the dashboard keeps working until the frontend has a login
+        self.assertFalse(s["JWT_REFRESH_COOKIE"]["secure"])  # plain-http localhost
 
     def test_explicit_environment_overrides_the_manage_py_default(self):
         result = load_settings({"DJANGO_ENV": "production"}, argv0="manage.py")

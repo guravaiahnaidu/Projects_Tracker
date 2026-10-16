@@ -198,7 +198,7 @@ export default function TaskEditor({
             </div>
             <div>
               <label htmlFor="te-owner" className={label}>
-                Owner
+                Employee Name
               </label>
               <select id="te-owner" value={owner} onChange={(e) => setOwner(e.target.value)} className={`${control} w-full`}>
                 {members.length > 0 && (
