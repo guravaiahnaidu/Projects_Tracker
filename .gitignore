@@ -58,3 +58,4 @@ venv/
 # keep the committed env templates (the rule above ignores .env*)
 !.env.example
 !.env.local.example
+backend/staticfiles/

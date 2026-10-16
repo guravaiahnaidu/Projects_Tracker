@@ -106,7 +106,14 @@ class ProductionSettingsTests(unittest.TestCase):
 
     def test_jwt_configuration_is_validated(self):
         self.assert_refuses({**PROD, "DJANGO_JWT_SIGNING_KEY": "short"}, "DJANGO_JWT_SIGNING_KEY")
-        self.assert_refuses({**PROD, "DJANGO_JWT_COOKIE_SAMESITE": "None"}, "DJANGO_JWT_COOKIE_SAMESITE")
+        self.assert_refuses({**PROD, "DJANGO_JWT_COOKIE_SAMESITE": "Anything"}, "DJANGO_JWT_COOKIE_SAMESITE")
+        # None (frontend on another site) is allowed, but only with a Secure cookie.
+        result = load_settings({**PROD, "DJANGO_JWT_COOKIE_SAMESITE": "none"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["JWT_REFRESH_COOKIE"]["samesite"], "None")
+        self.assert_refuses(
+            {"DJANGO_ENV": "development", "DJANGO_JWT_COOKIE_SAMESITE": "None"}, "DJANGO_JWT_COOKIE_SAMESITE"
+        )
         for name in ("DJANGO_JWT_ACCESS_MINUTES", "DJANGO_JWT_REFRESH_HOURS"):
             for value in ("0", "-5", "soon"):
                 with self.subTest(name=name, value=value):
