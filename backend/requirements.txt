@@ -4,3 +4,4 @@ django-cors-headers>=4.7
 djangorestframework-simplejwt>=5.3,<6
 gunicorn
 whitenoise>=6.6
+psycopg[binary]>=3.2

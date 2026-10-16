@@ -161,8 +161,8 @@ TEMPLATES = [
 WSGI_APPLICATION = "config.wsgi.application"
 
 # SQLite by default (local development). Set DJANGO_DB_ENGINE=postgresql (plus DJANGO_DB_NAME / _USER / _PASSWORD /
-# _HOST / _PORT, read from the environment only) to run against PostgreSQL; this needs the psycopg package, which is
-# not in requirements.txt because SQLite is the supported default.
+# _HOST / _PORT, read from the environment only) to run against PostgreSQL via psycopg. Hosted databases such as Neon
+# need DJANGO_DB_SSLMODE=require.
 if os.environ.get("DJANGO_DB_ENGINE", "sqlite").strip().lower() == "postgresql":
     DATABASES = {
         "default": {
@@ -172,6 +172,7 @@ if os.environ.get("DJANGO_DB_ENGINE", "sqlite").strip().lower() == "postgresql":
             "PASSWORD": os.environ.get("DJANGO_DB_PASSWORD", ""),
             "HOST": os.environ.get("DJANGO_DB_HOST", "localhost"),
             "PORT": os.environ.get("DJANGO_DB_PORT", "5432"),
+            "OPTIONS": {"sslmode": os.environ.get("DJANGO_DB_SSLMODE", "prefer")},
         }
     }
 else:
