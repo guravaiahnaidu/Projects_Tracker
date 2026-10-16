@@ -107,13 +107,14 @@ class ProductionSettingsTests(unittest.TestCase):
     def test_jwt_configuration_is_validated(self):
         self.assert_refuses({**PROD, "DJANGO_JWT_SIGNING_KEY": "short"}, "DJANGO_JWT_SIGNING_KEY")
         self.assert_refuses({**PROD, "DJANGO_JWT_COOKIE_SAMESITE": "Anything"}, "DJANGO_JWT_COOKIE_SAMESITE")
-        # None (frontend on another site) is allowed, but only with a Secure cookie.
-        result = load_settings({**PROD, "DJANGO_JWT_COOKIE_SAMESITE": "none"})
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(result.stdout)["JWT_REFRESH_COOKIE"]["samesite"], "None")
-        self.assert_refuses(
-            {"DJANGO_ENV": "development", "DJANGO_JWT_COOKIE_SAMESITE": "None"}, "DJANGO_JWT_COOKIE_SAMESITE"
-        )
+        # None (frontend on another site) is allowed and always makes the cookie Secure, even when manage.py
+        # commands run in development mode during a build.
+        for env in ({**PROD, "DJANGO_JWT_COOKIE_SAMESITE": "none"}, {"DJANGO_ENV": "development", "DJANGO_JWT_COOKIE_SAMESITE": "None"}):
+            with self.subTest(env=env.get("DJANGO_ENV")):
+                result = load_settings(env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                cookie = json.loads(result.stdout)["JWT_REFRESH_COOKIE"]
+                self.assertEqual((cookie["samesite"], cookie["secure"]), ("None", True))
         for name in ("DJANGO_JWT_ACCESS_MINUTES", "DJANGO_JWT_REFRESH_HOURS"):
             for value in ("0", "-5", "soon"):
                 with self.subTest(name=name, value=value):

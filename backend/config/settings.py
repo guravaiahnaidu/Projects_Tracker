@@ -72,8 +72,8 @@ JWT_ACCESS_MINUTES = _env_positive_int("DJANGO_JWT_ACCESS_MINUTES", 15)
 JWT_REFRESH_HOURS = _env_positive_int("DJANGO_JWT_REFRESH_HOURS", 24)
 # A separate key lets tokens be revoked all at once (by changing it) without touching DJANGO_SECRET_KEY.
 JWT_SIGNING_KEY = os.environ.get("DJANGO_JWT_SIGNING_KEY", "") or SECRET_KEY
-# "None" is only for a frontend on a different site (e.g. *.vercel.app calling *.onrender.com). It needs a Secure
-# cookie; refresh/ and logout/ still accept only requests from CORS_ALLOWED_ORIGINS (see accounts/views.py).
+# "None" is only for a frontend on a different site (e.g. *.vercel.app calling *.onrender.com). It makes the cookie
+# Secure; refresh/ and logout/ still accept only requests from CORS_ALLOWED_ORIGINS (see accounts/views.py).
 JWT_COOKIE_SAMESITE = os.environ.get("DJANGO_JWT_COOKIE_SAMESITE", "Strict").strip().capitalize()
 if JWT_COOKIE_SAMESITE not in ("Strict", "Lax", "None"):
     raise ConfigurationError("DJANGO_JWT_COOKIE_SAMESITE must be Strict, Lax or None.")
@@ -245,11 +245,10 @@ JWT_REFRESH_COOKIE = {
     "name": "pt_refresh",
     "path": "/api/auth/",
     "domain": os.environ.get("DJANGO_JWT_COOKIE_DOMAIN") or None,
-    "secure": PRODUCTION or _env_bool("DJANGO_JWT_COOKIE_SECURE", False),
+    # Browsers reject SameSite=None without Secure, so None always implies Secure.
+    "secure": PRODUCTION or JWT_COOKIE_SAMESITE == "None" or _env_bool("DJANGO_JWT_COOKIE_SECURE", False),
     "samesite": JWT_COOKIE_SAMESITE,
 }
-if JWT_COOKIE_SAMESITE == "None" and not JWT_REFRESH_COOKIE["secure"]:
-    raise ConfigurationError("DJANGO_JWT_COOKIE_SAMESITE=None needs a Secure cookie (production or DJANGO_JWT_COOKIE_SECURE=true).")
 
 # Server-side logging: errors and the API's own warnings go to the console (stderr). Request bodies, tokens and
 # personal data are never logged by this configuration; the "api" logger records only the view and exception type.
