@@ -1,11 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { dateOffset, PRIORITIES, projectById, tasks, team, type Priority, type TaskState } from "@/lib/data";
+import { dateOffset, PRIORITIES, projectById, projects, tasks, type Priority, type TaskState } from "@/lib/data";
 import { api, ApiError, errorMessage, type TaskPatch } from "@/lib/api";
-import { memberId, mutate, numericId, SCOPES } from "@/lib/store";
-import { useNow } from "./hooks";
-import { control, dueText, FieldNote, STATES, workDateProblem } from "./TasksView";
+import { mutate, numericId, SCOPES } from "@/lib/store";
+import { useNow, useProjectTeam } from "./hooks";
+import { control, dueText, FieldNote, STATES, teamOptions, TeamStatus, workDateProblem } from "./TasksView";
 import { DateField } from "./FormControls";
 import { ConfirmDialog } from "./ui";
 import { diffDays, wallClockIso } from "@/lib/serverClock";
@@ -37,7 +37,8 @@ export default function TaskEditor({
   const project = task ? projectById(task.projectId) : null;
 
   const [title, setTitle] = useState(task?.title ?? "");
-  const [owner, setOwner] = useState(task?.owner ?? "");
+  const [projectId, setProjectId] = useState(task?.projectId ?? "");
+  const [owner, setOwner] = useState(task?.ownerId ?? ""); // member id
   const [workDate, setWorkDate] = useState(task?.workDate ?? "");
   const [workTyped, setWorkTyped] = useState(false); // text entered but not a valid date
   const [due, setDue] = useState(task?.dueDate ?? ""); // "" = no deadline
@@ -50,6 +51,7 @@ export default function TaskEditor({
   const [busy, setBusy] = useState(false);
   const [serverError, setServerError] = useState("");
   const [serverFields, setServerFields] = useState<Record<string, string>>({});
+  const projectTeam = useProjectTeam(projectId);
   const titleRef = useRef<HTMLInputElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
 
@@ -69,7 +71,8 @@ export default function TaskEditor({
   const dueOffset = due ? diffDays(due, wallClockIso(now)) : null;
   const dirty =
     title.trim() !== task.title ||
-    owner !== task.owner ||
+    projectId !== task.projectId ||
+    owner !== task.ownerId ||
     workDate !== task.workDate ||
     (due || null) !== task.dueDate ||
     workTyped ||
@@ -78,23 +81,32 @@ export default function TaskEditor({
     state !== task.state ||
     note.trim() !== (task.note ?? "");
 
+  // Employee choices: only the selected project's team. An older task whose owner is not on the team keeps that
+  // owner (marked) while the project and owner are unchanged, so its other fields can still be edited.
+  const owners = teamOptions(projectTeam.members, task.ownerId);
+  const legacyOwner =
+    projectTeam.status === "ready" && projectId === task.projectId && !owners.some((o) => o.value === task.ownerId);
+  if (legacyOwner) owners.unshift({ value: task.ownerId, label: task.owner, hint: "Not on this project's team" });
+  const ownerChanged = projectId !== task.projectId || owner !== task.ownerId;
+
   // Field-level problems; shown after the first save attempt, next to their field.
   const problems = {
     title: !title.trim() ? "Give the task a name." : "",
+    owner: !ownerChanged
+      ? ""
+      : !owner
+        ? "Choose the employee to assign this task to."
+        : projectTeam.status !== "ready"
+          ? "Wait for the project's employees to load."
+          : !owners.some((o) => o.value === owner)
+            ? "Choose an employee assigned to this project."
+            : "",
     work: workDateProblem(workDate, workTyped),
     due: dueTyped ? "Enter the due date as dd-mm-yyyy, or leave it empty." : "",
     note: state === "blocked" ? blockedNoteProblem(note) : note.trim().length > NOTE_MAX_LENGTH ? BLOCKED_NOTE_TOO_LONG : "",
   };
-  const problem = problems.title || problems.work || problems.due || problems.note;
+  const problem = problems.title || problems.owner || problems.work || problems.due || problems.note;
   const fieldError = (f: keyof typeof problems, server: string) => serverFields[server] || (attempted ? problems[f] : "");
-
-  // Project team first (with their role), then everyone else.
-  const members = project.members.map((m) => ({ name: m.name, text: `${m.name} (${m.role})` }));
-  const others = team
-    .filter((m) => !project.members.some((x) => x.name === m.name))
-    .map((m) => ({ name: m.name, text: m.name }));
-  const owners = [...members, ...others];
-  if (!owners.some((o) => o.name === task.owner)) owners.unshift({ name: task.owner, text: task.owner });
 
   // The server records every change in the activity log, so the editor only sends what changed.
   const run = async (write: () => Promise<unknown>) => {
@@ -121,7 +133,8 @@ export default function TaskEditor({
     void run(() => {
       const patch: TaskPatch = {};
       if (title.trim() !== task.title) patch.title = title.trim();
-      if (owner !== task.owner) patch.owner_id = memberId(owner);
+      if (projectId !== task.projectId) patch.project_id = numericId(projectId);
+      if (owner !== task.ownerId) patch.owner_id = Number(owner);
       if (workDate !== task.workDate) patch.work_date = workDate;
       if ((due || null) !== task.dueDate) patch.due_date = due || null;
       if (priority !== task.priority) patch.priority = priority;
@@ -192,36 +205,64 @@ export default function TaskEditor({
               <label htmlFor="te-project" className={label}>
                 Project
               </label>
-              <select id="te-project" disabled value={project.id} className={`${control} w-full cursor-not-allowed opacity-70`}>
-                <option value={project.id}>{project.name}</option>
+              <select
+                id="te-project"
+                value={projectId}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setProjectId(v);
+                  // A different project has a different team: pick the employee again (back to the original
+                  // project restores the original owner).
+                  setOwner(v === task.projectId ? task.ownerId : "");
+                  setServerFields((f) => ({ ...f, project_id: "", owner_id: "" }));
+                }}
+                aria-invalid={!!serverFields.project_id}
+                className={`${control} w-full ${serverFields.project_id ? "border-st-red!" : ""}`}
+              >
+                {[...projects]
+                  .sort((a, b) => a.name.localeCompare(b.name))
+                  .map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
               </select>
+              <FieldNote id="te-project-error" message={serverFields.project_id} />
             </div>
             <div>
               <label htmlFor="te-owner" className={label}>
                 Employee Name
               </label>
-              <select id="te-owner" value={owner} onChange={(e) => setOwner(e.target.value)} className={`${control} w-full`}>
-                {members.length > 0 && (
-                  <optgroup label={`${project.name} team`}>
-                    {owners
-                      .filter((o) => members.some((m) => m.name === o.name))
-                      .map((o) => (
-                        <option key={o.name} value={o.name}>
-                          {o.text}
-                        </option>
-                      ))}
-                  </optgroup>
+              <select
+                id="te-owner"
+                value={owner}
+                onChange={(e) => {
+                  setOwner(e.target.value);
+                  setServerFields((f) => ({ ...f, owner_id: "" }));
+                }}
+                disabled={projectTeam.status !== "ready" || !owners.length}
+                aria-invalid={!!fieldError("owner", "owner_id")}
+                className={`${control} w-full disabled:cursor-not-allowed disabled:opacity-60 ${fieldError("owner", "owner_id") ? "border-st-red!" : ""}`}
+              >
+                {(!owner || projectTeam.status !== "ready") && (
+                  <option value="">{projectTeam.status === "loading" ? "Loading employees..." : "Select employee"}</option>
                 )}
-                <optgroup label="Others">
-                  {owners
-                    .filter((o) => !members.some((m) => m.name === o.name))
-                    .map((o) => (
-                      <option key={o.name} value={o.name}>
-                        {o.text}
-                      </option>
-                    ))}
-                </optgroup>
+                {projectTeam.status === "ready" &&
+                  owners.map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label} ({o.hint})
+                    </option>
+                  ))}
               </select>
+              {fieldError("owner", "owner_id") ? (
+                <FieldNote id="te-owner-error" message={fieldError("owner", "owner_id")} />
+              ) : legacyOwner && owner === task.ownerId ? (
+                <p className="mt-1 text-[13px] font-medium text-st-amber-strong">
+                  {task.owner} is not on this project&apos;s team. You can keep them, or choose a team member.
+                </p>
+              ) : (
+                <TeamStatus projectTeam={projectTeam} options={owners} />
+              )}
             </div>
 
             <div>

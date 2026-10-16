@@ -66,6 +66,8 @@ class TaskDetailView(APIView):
 
         if "title" in data and data["title"] != task.title:
             changes.append(f"renamed to “{data['title']}”")
+        if "project" in data and data["project"] != task.project:
+            changes.append(f"moved {task.project.name} -> {data['project'].name}")
         if "owner" in data and data["owner"] != task.owner:
             changes.append(f"owner {task.owner.name} -> {data['owner'].name}")
         if "work_date" in data and data["work_date"] != task.work_date:

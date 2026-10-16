@@ -1,6 +1,7 @@
 from datetime import date, timedelta
 
 from activity.models import ActivityLog
+from projects.models import ProjectMember
 from tests.support import ApiTestCase, day
 from tasks import rules
 from tasks.models import Task
@@ -102,6 +103,7 @@ class TaskApiTests(ApiTestCase):
         project = self.project()
         t = self.task(project=project, title="Old")
         other = self.member(name="Other")
+        ProjectMember.objects.create(project=project, member=other)
         res = self.patch(
             f"/tasks/{t.id}/",
             {"title": "New", "owner_id": other.id, "priority": "High", "state": "in-progress", "due_date": day(9).isoformat(), "note": "n"},
@@ -113,18 +115,57 @@ class TaskApiTests(ApiTestCase):
         for fragment in ("priority Medium -> High", "status Not Started -> In Progress", "note updated"):
             self.assertIn(fragment, text)
 
-    def test_patch_validation_and_immutable_project(self):
+    def test_patch_validation(self):
         t = self.task()
         path = f"/tasks/{t.id}/"
         self.assertEqual(self.patch(path, {"title": "  "}).status_code, 400)
         self.assertEqual(self.patch(path, {"due_date": "nope"}).status_code, 400)
         self.assertEqual(self.patch(path, {"owner_id": 9999}).status_code, 400)
+        self.assertEqual(self.patch(path, {"project_id": 9999}).status_code, 400)
         self.assertEqual(self.patch(path, {"priority": "x"}).status_code, 400)
-        other = self.project(name="Other project")
-        res = self.patch(path, {"project_id": other.id})
-        self.assertEqual(res.status_code, 400)
         self.assertEqual(self.patch(path, {"project_id": t.project_id}).status_code, 200)
         self.assertEqual(self.patch("/tasks/9999/", {"title": "x"}).status_code, 404)
+
+    def test_owner_must_be_on_the_project_team(self):
+        project = self.project()
+        outsider = self.member(name="Outsider")
+        res = self.post("/tasks/", self.valid(project, owner_id=outsider.id))
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("is not assigned to Test Project", res.data["error"]["fields"]["owner_id"][0])
+        self.assertEqual(Task.objects.count(), 0)
+
+        t = self.task(project=project)
+        self.assertEqual(self.patch(f"/tasks/{t.id}/", {"owner_id": outsider.id}).status_code, 400)
+        ProjectMember.objects.create(project=project, member=outsider)
+        self.assertEqual(self.patch(f"/tasks/{t.id}/", {"owner_id": outsider.id}).status_code, 200)
+
+    def test_owner_not_on_team_does_not_block_other_edits(self):
+        # Older tasks may have an owner who is not (or no longer) on the project team.
+        project = self.project()
+        t = self.task(project=project, owner=self.member(name="Former"))
+        self.assertEqual(self.patch(f"/tasks/{t.id}/", {"title": "Renamed", "state": "in-progress"}).status_code, 200)
+
+    def test_move_to_another_project(self):
+        t = self.task(title="Movable")
+        other = self.project(name="Other project")
+        # The current owner is not on the other project's team.
+        res = self.patch(f"/tasks/{t.id}/", {"project_id": other.id})
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("owner_id", res.data["error"]["fields"])
+        res = self.patch(f"/tasks/{t.id}/", {"project_id": other.id, "owner_id": other.lead_id})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual((res.data["project"], res.data["owner"]), (other.id, other.lead_id))
+        text = other.activity.get(action="task.updated").description
+        self.assertIn("moved Test Project -> Other project", text)
+
+    def test_project_members_endpoint_lists_only_the_team(self):
+        project = self.project()
+        self.member(name="Not on it")
+        res = self.get(f"/projects/{project.id}/members/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual([r["name"] for r in res.data["results"]], ["Lead of Test Project"])
+        self.assertEqual(set(res.data["results"][0]), {"id", "member_id", "name", "role", "status", "title"})
+        self.assertEqual(self.get("/projects/9999/members/").status_code, 404)
 
     def test_no_change_logs_nothing(self):
         t = self.task()

@@ -134,6 +134,7 @@ export const mapTask = (t: ApiTask, today: string = serverToday()): Task => ({
   id: String(t.id),
   title: t.title,
   owner: t.owner_name,
+  ownerId: String(t.owner),
   projectId: String(t.project),
   workDate: t.work_date,
   dueDate: t.due_date,

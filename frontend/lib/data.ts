@@ -42,7 +42,8 @@ export interface Project {
 export interface Task {
   id: string;
   title: string;
-  owner: string;
+  owner: string; // name
+  ownerId: string; // member id
   projectId: string;
   workDate: string; // YYYY-MM-DD: the day the work was done (may be in the past)
   dueDate: string | null; // YYYY-MM-DD optional deadline

@@ -197,10 +197,18 @@ class ProjectTaskListView(APIView):
 
 class ProjectMemberListView(APIView):
     def get(self, request, pk):
-        project = get_project(pk)
+        project = get_project(pk, detail=False)
+        # The task form's employee picker uses this list, so it carries the person's status and job title too.
         rows = [
-            {"id": m.id, "member_id": m.member_id, "name": m.member.name, "role": m.role}
-            for m in project.memberships.all()
+            {
+                "id": m.id,
+                "member_id": m.member_id,
+                "name": m.member.name,
+                "role": m.role,
+                "status": m.member.status,
+                "title": m.member.title,
+            }
+            for m in project.memberships.select_related("member")
         ]
         return Response({"results": rows, "count": len(rows)})
 

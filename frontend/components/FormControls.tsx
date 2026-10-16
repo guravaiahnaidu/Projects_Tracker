@@ -22,6 +22,7 @@ export function Combobox({
   allowCreate = false,
   clearable = false,
   invalid = false,
+  disabled = false,
   describedBy,
   onBlur,
   emptyText = "No matches",
@@ -34,6 +35,7 @@ export function Combobox({
   allowCreate?: boolean;
   clearable?: boolean;
   invalid?: boolean;
+  disabled?: boolean;
   describedBy?: string;
   onBlur?: () => void;
   emptyText?: string;
@@ -100,6 +102,7 @@ export function Combobox({
         aria-activedescendant={open && items[active] ? `${listId}-${active}` : undefined}
         aria-invalid={invalid}
         aria-describedby={describedBy}
+        disabled={disabled}
         autoComplete="off"
         value={open ? query : shown}
         placeholder={open && shown ? shown : placeholder}
@@ -115,10 +118,10 @@ export function Combobox({
           close();
           onBlur?.();
         }}
-        className={`${control} w-full pr-16 font-normal placeholder:text-muted ${invalid ? "border-st-red! focus:ring-st-red/20!" : ""}`}
+        className={`${control} w-full pr-16 font-normal placeholder:text-muted disabled:cursor-not-allowed disabled:opacity-60 ${invalid ? "border-st-red! focus:ring-st-red/20!" : ""}`}
       />
       <span className="pointer-events-none absolute inset-y-0 right-0 flex items-center gap-1 pr-3 text-muted">
-        {clearable && value && (
+        {clearable && value && !disabled && (
           <button
             type="button"
             tabIndex={-1}
@@ -134,7 +137,7 @@ export function Combobox({
           <path d="M5.2 7.4a.75.75 0 0 1 1.06.04L10 11.4l3.74-3.96a.75.75 0 1 1 1.1 1.02l-4.3 4.55a.75.75 0 0 1-1.1 0l-4.3-4.55a.75.75 0 0 1 .06-1.06Z" />
         </svg>
       </span>
-      {open && (
+      {open && !disabled && (
         <ul
           ref={listRef}
           id={listId}

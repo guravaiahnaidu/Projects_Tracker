@@ -14,11 +14,11 @@ import {
   type Task,
   type TaskState,
 } from "@/lib/data";
-import { api, ApiError, errorMessage } from "@/lib/api";
+import { api, ApiError, errorMessage, type ApiProjectMember } from "@/lib/api";
 import { mutate, numericId, SCOPES, serverToday } from "@/lib/store";
 import { addDaysIso, isoToLocalDate, wallClockIso } from "@/lib/serverClock";
 import { BLOCKED_NOTE_TOO_LONG, blockedNoteOrNull, blockedNoteProblem, NOTE_MAX_LENGTH } from "@/lib/blockedNote";
-import { useNow } from "./hooks";
+import { useNow, useProjectTeam, type ProjectTeam } from "./hooks";
 import type { OpenRef } from "./Overview";
 import { Modal } from "./ui";
 
@@ -500,14 +500,31 @@ const TASK_SERVER_FIELDS: Record<string, TaskField> = {
   note: "note",
 };
 
-/** Owner choices: the project's team first (with their role), then everyone else; inactive people are left out. */
-export function ownerOptions(projectId: string, keep?: string): ComboOption[] {
-  const project = projects.find((p) => p.id === projectId);
-  const role = (name: string) => project?.members.find((x) => x.name === name)?.role;
-  return team
-    .filter((m) => m.id !== undefined && (m.status !== "inactive" || m.name === keep))
-    .sort((a, b) => Number(!role(a.name)) - Number(!role(b.name)) || a.name.localeCompare(b.name))
-    .map((m) => ({ value: String(m.id), label: m.name, hint: role(m.name) ?? (m.status === "on_leave" ? "On leave" : m.title) }));
+/** Owner choices: only the selected project's team, with their role; inactive people are left out unless `keep`
+ *  (the member id already on the task). */
+export function teamOptions(members: ApiProjectMember[], keep?: string): ComboOption[] {
+  return members
+    .filter((m) => m.status !== "inactive" || String(m.member_id) === keep)
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((m) => ({ value: String(m.member_id), label: m.name, hint: m.status === "on_leave" ? `${m.role} · On leave` : m.role }));
+}
+
+/** The line under the employee picker: why it is disabled or empty, or a load error with Retry. */
+export function TeamStatus({ projectTeam: t, options }: { projectTeam: ProjectTeam; options: ComboOption[] }) {
+  if (t.status === "idle") return <p className="mt-1 text-[13px] text-muted">Select a project first.</p>;
+  if (t.status === "loading") return <p className="mt-1 text-[13px] text-muted" role="status">Loading employees...</p>;
+  if (t.status === "error")
+    return (
+      <p role="alert" className="mt-1 text-[13px] font-medium text-st-red-strong">
+        Could not load employees: {t.error}{" "}
+        <button type="button" onClick={t.retry} className="underline underline-offset-2">
+          Retry
+        </button>
+      </p>
+    );
+  if (!options.length)
+    return <p className="mt-1 text-[13px] font-medium text-st-amber-strong">No employees assigned to this project. Add them in the Projects tab first.</p>;
+  return null;
 }
 
 /** Work date problems shared by the new-task form and the task editor. */
@@ -552,12 +569,19 @@ export function NewTaskForm({
   const [serverFields, setServerFields] = useState<Partial<Record<TaskField, string>>>({});
 
   const projectOptions = [...projects].sort((a, b) => a.name.localeCompare(b.name)).map((p) => ({ value: p.id, label: p.name, hint: p.client }));
-  const owners = ownerOptions(projectId);
+  const projectTeam = useProjectTeam(projectId);
+  const owners = teamOptions(projectTeam.members);
 
   const problems: Partial<Record<TaskField, string>> = {
     title: !title.trim() ? "Give the task a name." : "",
     project: !projectId ? "Choose a project." : "",
-    owner: !owner ? "Choose the employee to assign this task to." : "",
+    owner: !owner
+      ? "Choose the employee to assign this task to."
+      : projectTeam.status !== "ready"
+        ? "Wait for the project's employees to load."
+        : !owners.some((o) => o.value === owner)
+          ? "Choose an employee assigned to this project."
+          : "",
     work: workDateProblem(workDate, workTyped),
     due: dueTyped ? "Enter the due date as dd-mm-yyyy, or leave it empty." : "",
     note: state === "blocked" ? blockedNoteProblem(note) : note.trim().length > NOTE_MAX_LENGTH ? BLOCKED_NOTE_TOO_LONG : "",
@@ -658,6 +682,11 @@ export function NewTaskForm({
             onChange={(v) => {
               setProjectId(v);
               edited("project");
+              // The employee list belongs to the project: a new project starts with no employee chosen.
+              if (v !== projectId) {
+                setOwner("");
+                edited("owner");
+              }
             }}
             options={projectOptions}
             placeholder="Select project"
@@ -678,11 +707,12 @@ export function NewTaskForm({
               edited("owner");
             }}
             options={owners}
-            placeholder="Select employee"
-            emptyText={team.length ? "No matching employee" : "Add employees in the Team tab first"}
+            disabled={projectTeam.status !== "ready" || !owners.length}
+            placeholder={projectTeam.status === "loading" ? "Loading employees..." : "Select employee"}
+            emptyText="No matching employee"
             {...a11y("owner")}
           />
-          {err("owner")}
+          {err("owner") || <TeamStatus projectTeam={projectTeam} options={owners} />}
         </div>
 
         <div>

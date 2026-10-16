@@ -242,6 +242,16 @@ export interface ApiProject {
   members?: { id: number; member_id: number; name: string; role: string }[];
 }
 
+/** One person on a project's team, from /projects/<id>/members/. */
+export interface ApiProjectMember {
+  id: number;
+  member_id: number;
+  name: string;
+  role: string;
+  status: string; // "active" | "on_leave" | "inactive"
+  title: string;
+}
+
 export interface ApiTask {
   id: number;
   title: string;
@@ -434,6 +444,7 @@ export interface TaskInput {
 
 export interface TaskPatch {
   title?: string;
+  project_id?: number; // moving a task needs an owner from the new project's team
   owner_id?: number;
   work_date?: string;
   due_date?: string | null;
@@ -464,6 +475,7 @@ export const api = {
   createProject: (body: ProjectInput) => post<ApiProject>("/projects/", body),
   updateProject: (id: number, body: ProjectPatch) => patch<ApiProject>(`/projects/${id}/`, body),
   deleteProject: (id: number) => del(`/projects/${id}/`),
+  listProjectMembers: (id: number) => get<Paged<ApiProjectMember>>(`/projects/${id}/members/`),
   addProjectMember: (id: number, body: { member_id: number; role?: string }) => post<ApiProject>(`/projects/${id}/members/`, body),
   removeProjectMember: (id: number, memberId: number) => del(`/projects/${id}/members/${memberId}/`),
   addObjective: (id: number, description: string) => post<ApiProject>(`/projects/${id}/objectives/`, { description }),

@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import { api, errorMessage, type ApiProjectMember } from "@/lib/api";
 import { getNow, serverToday, subscribeStore, syncClock } from "@/lib/store";
 
 /* Wall clock in the SERVER's time zone (see lib/serverClock.ts), client only: null during SSR to avoid
@@ -78,4 +79,36 @@ export function useTheme(): [ThemePref, (t: ThemePref) => void] {
    re-renders when that date changes (the same minute timer as useNow). */
 export function useToday(): string | null {
   return useSyncExternalStore(subscribeNow, serverToday, () => null);
+}
+
+/* The people assigned to one project, fetched from /projects/<id>/members/ for the task forms' employee picker.
+   "idle" until a project is chosen. A response for a project that is no longer selected is ignored, so switching
+   quickly never shows the previous project's team. */
+export type ProjectTeam =
+  | { status: "idle" | "loading"; members: []; error: ""; retry: () => void }
+  | { status: "ready"; members: ApiProjectMember[]; error: ""; retry: () => void }
+  | { status: "error"; members: []; error: string; retry: () => void };
+
+export function useProjectTeam(projectId: string): ProjectTeam {
+  const [attempt, setAttempt] = useState(0);
+  const [result, setResult] = useState<{ key: string; members?: ApiProjectMember[]; error?: string } | null>(null);
+  const key = `${projectId}#${attempt}`;
+  const retry = useCallback(() => setAttempt((a) => a + 1), []);
+
+  useEffect(() => {
+    if (!projectId) return;
+    let live = true;
+    api.listProjectMembers(Number(projectId)).then(
+      (res) => live && setResult({ key, members: res.results }),
+      (e) => live && setResult({ key, error: errorMessage(e) }),
+    );
+    return () => {
+      live = false;
+    };
+  }, [projectId, key]);
+
+  if (!projectId) return { status: "idle", members: [], error: "", retry };
+  if (result?.key !== key) return { status: "loading", members: [], error: "", retry };
+  if (result.error !== undefined) return { status: "error", members: [], error: result.error, retry };
+  return { status: "ready", members: result.members ?? [], error: "", retry };
 }

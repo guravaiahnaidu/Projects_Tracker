@@ -2,7 +2,7 @@ from rest_framework import serializers
 
 from common.limits import TASK_NOTE_MAX
 from members.models import Member
-from projects.models import Project
+from projects.models import Project, ProjectMember
 from projects.rules import today as today_fn
 
 from . import rules
@@ -13,11 +13,17 @@ WORK_DATE_INVALID = "Enter the work date as a valid date."
 
 
 class _TaskRulesMixin:
-    """The blocked-needs-a-note rule lives here once and applies to create and update alike."""
+    """Rules shared by create and update: a blocked task needs a note, and its owner must be on the project team."""
 
     def _check_blocked(self, state, note):
         if state == State.BLOCKED and not (note or "").strip():
             raise serializers.ValidationError({"note": BLOCKED_NOTE_MESSAGE})
+
+    def _check_owner_on_project(self, owner, project):
+        if not ProjectMember.objects.filter(project=project, member=owner).exists():
+            raise serializers.ValidationError(
+                {"owner_id": f"{owner.name} is not assigned to {project.name}. Choose someone from the project team."}
+            )
 
 
 class TaskCreateSerializer(_TaskRulesMixin, serializers.Serializer):
@@ -48,6 +54,7 @@ class TaskCreateSerializer(_TaskRulesMixin, serializers.Serializer):
 
     def validate(self, attrs):
         self._check_blocked(attrs["state"], attrs["note"])
+        self._check_owner_on_project(attrs["owner"], attrs["project"])
         return attrs
 
 
@@ -61,8 +68,9 @@ class TaskUpdateSerializer(_TaskRulesMixin, serializers.Serializer):
     priority = serializers.ChoiceField(choices=Priority.choices, required=False)
     state = serializers.ChoiceField(choices=State.choices, required=False)
     note = serializers.CharField(required=False, allow_blank=True, max_length=TASK_NOTE_MAX)
-    # Accepted only to give a clear error: a task cannot change project.
-    project_id = serializers.IntegerField(required=False)
+    project_id = serializers.PrimaryKeyRelatedField(
+        queryset=Project.objects.all(), source="project", required=False, error_messages={"does_not_exist": "Choose a project."}
+    )
 
     def validate_title(self, value):
         value = " ".join(value.split())
@@ -73,16 +81,14 @@ class TaskUpdateSerializer(_TaskRulesMixin, serializers.Serializer):
     def validate_note(self, value):
         return value.strip()
 
-    def validate_project_id(self, value):
-        if value != self.instance.project_id:
-            raise serializers.ValidationError("A task cannot be moved to another project.")
-        return value
-
     def validate(self, attrs):
         state = attrs.get("state", self.instance.state)
         note = attrs["note"] if "note" in attrs else self.instance.note
         self._check_blocked(state, note)
-        attrs.pop("project_id", None)
+        # Only checked when the owner or project changes, so older tasks whose owner is not on the team can still
+        # be edited (title, dates, status...) without reassigning them first.
+        if "owner" in attrs or "project" in attrs:
+            self._check_owner_on_project(attrs.get("owner", self.instance.owner), attrs.get("project", self.instance.project))
         return attrs
 
 

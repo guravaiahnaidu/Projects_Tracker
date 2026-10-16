@@ -1,6 +1,7 @@
 """Audit probes for the tasks and activity endpoints - see audit_support.py."""
 
 from activity.models import ActivityLog
+from projects.models import ProjectMember
 from tests.audit_support import AuditCase
 from tests.support import day
 from tasks.models import Task
@@ -12,6 +13,8 @@ class TaskAudit(AuditCase):
         self.other = self.member(name="Other Two")
         self.proj = self.project(lead=self.lead, name="Alpha")
         self.proj2 = self.project(lead=self.other, name="Beta")
+        # A task's owner must be on its project's team; Other Two also works on Alpha.
+        ProjectMember.objects.create(project=self.proj, member=self.other)
 
     def body(self, **extra):
         return {"title": "Do it", "project_id": self.proj.id, "owner_id": self.lead.id, "due_date": day(3).isoformat(), **extra}
@@ -100,7 +103,7 @@ class TaskAudit(AuditCase):
 
         self.probe("PATCH", D, "valid", "unchanged values write no activity", patch_noop)
         self.probe("PATCH", D, "business-rule", "blocked needs a note (new or existing)", lambda: (self.envelope(self.patch(f"/tasks/{od.id}/", {"state": "blocked", "note": ""}), 400), self.expect(self.patch(f"/tasks/{od.id}/", {"state": "blocked", "note": "x"}), 200), self.envelope(self.patch(f"/tasks/{od.id}/", {"note": ""}), 400))[0])
-        self.probe("PATCH", D, "business-rule", "task cannot move to another project -> 400", lambda: (self.envelope(self.patch(f"/tasks/{od.id}/", {"project_id": self.proj2.id}), 400), self.assertEqual(Task.objects.get(pk=od.id).project_id, self.proj.id))[0])
+        self.probe("PATCH", D, "business-rule", "moving to a project the owner is not on -> 400", lambda: (self.envelope(self.patch(f"/tasks/{od.id}/", {"project_id": self.proj2.id, "owner_id": self.lead.id}), 400), self.assertEqual(Task.objects.get(pk=od.id).project_id, self.proj.id))[0])
         self.probe("PATCH", D, "valid", "project_id equal to current is accepted", lambda: self.expect(self.patch(f"/tasks/{od.id}/", {"project_id": self.proj.id, "state": "in-progress"}), 200))
 
         def protected():
