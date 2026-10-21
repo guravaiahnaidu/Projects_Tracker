@@ -1,5 +1,6 @@
 from tests.support import ApiTestCase, day
 from dashboard import logic
+from projects.models import Project
 from projects.rules import today
 
 
@@ -37,6 +38,23 @@ class DashboardTests(ApiTestCase):
         self.assertEqual((s["off_track"], s["watch"], s["on_track"]), (1, 1, 1))
         self.assertEqual((s["overdue"], s["due_today"], s["blocked"]), (2, 1, 1))
         self.assertEqual(s["stretched"], 1)
+
+    def test_project_with_an_active_task_is_in_dev(self):
+        """No dates and no progress set: task states alone decide whether the project has started."""
+        lead = self.member(name="Lead")
+        idle, busy, half = (self.project(lead, name=n) for n in ("Idle", "Busy", "Half"))
+        Project.objects.update(start_date=None, end_date=None)
+        self.task(idle, lead, "not yet")
+        self.task(busy, lead, "doing", state="in-progress")
+        self.task(half, lead, "a", state="done")
+        self.task(half, lead, "b")
+        s = self.get("/dashboard/summary/").data
+        self.assertEqual((s["total"], s["in_flight"], s["not_started"], s["on_track"]), (3, 2, 1, 2))
+        rows = {r["name"]: r for r in self.get("/projects/").data["results"]}
+        self.assertEqual(rows["Idle"]["health"], "not-started")
+        self.assertEqual((rows["Busy"]["health"], rows["Busy"]["effective_progress"]), ("on-track", 0))
+        self.assertEqual((rows["Half"]["effective_progress"], rows["Half"]["progress"]), (50, 0))
+        self.assertEqual(rows["Half"]["task_stats"], {"total": 2, "done": 1, "started": 1})
 
     def test_summary_reacts_to_changes(self):
         erp, *_ = self.build()

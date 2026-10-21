@@ -197,7 +197,9 @@ def project_payload(project: Project, on=None, detail: bool = False) -> dict:
         "end_date": project.end_date.isoformat() if project.end_date else None,
         "start_offset": rules.start_offset(project, on),
         "end_offset": rules.end_offset(project, on),
-        "progress": project.progress,
+        "progress": project.progress,  # as set on the project
+        "effective_progress": rules.progress(project),  # falls back to task completion while progress is 0
+        "task_stats": rules.task_stats(project),
         "decision": project.decision,
         "time_used": rules.time_used(project, on),
         "health": rules.health(project, on),
@@ -234,7 +236,7 @@ def project_payload(project: Project, on=None, detail: bool = False) -> dict:
 
 
 def with_related(queryset, detail: bool = False):
-    queryset = queryset.select_related("lead").prefetch_related("memberships__member")
+    queryset = rules.with_task_stats(queryset.select_related("lead").prefetch_related("memberships__member"))
     if detail:
         queryset = queryset.prefetch_related("objectives", "tasks__owner")
     return queryset

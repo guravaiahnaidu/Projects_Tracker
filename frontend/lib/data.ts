@@ -32,7 +32,9 @@ export interface Project {
   endDate: string | null; // YYYY-MM-DD deadline; null = not set (optional)
   startOffset: number | null; // days from the server's today (negative = already started); null = no start date
   endOffset: number | null; // days from the server's today; null = no deadline
-  done: number; // % of work completed
+  done: number; // % of work completed: the progress set on the project, or task completion while that is 0
+  progressSet: number; // the progress set on the project itself (0 = not set)
+  tasksStarted: number; // tasks in progress, blocked or done: any of these means the project has started
   decision?: string; // what leadership needs to decide, if anything
   objectives: string[];
   members: ProjectMember[];
@@ -101,7 +103,7 @@ export function timeUsed(p: Project): number {
 
 export function projectStatus(p: Project): ProjectStatus {
   const used = timeUsed(p);
-  if (used === 0 && p.done === 0) return "not-started";
+  if (used === 0 && p.done === 0 && p.tasksStarted === 0) return "not-started";
   const gap = used - p.done;
   if (gap > 15) return "off-track";
   if (gap > 3) return "watch";

@@ -79,7 +79,7 @@ class ProjectListView(APIView):
         if sort == "deadline":
             rows.sort(key=lambda r: (r["end_date"] is None, r["end_date"] or ""))  # no deadline last
         elif sort == "progress":
-            rows.sort(key=lambda r: -r["progress"])
+            rows.sort(key=lambda r: -r["effective_progress"])
         elif sort == "name":
             rows.sort(key=lambda r: r["name"].lower())
         elif sort == "attention":
@@ -343,7 +343,7 @@ class ProjectDecisionResolveView(APIView):
             lead_name=project.lead.name if project.lead else "",
             health=rules.health(project, on),
             deadline=project.end_date,
-            context=f"{project.progress}% done with {rules.time_used(project, on)}% of the time used",
+            context=f"{rules.progress(project)}% done with {rules.time_used(project, on)}% of the time used",
             event=event,
         )
         payload = project_payload(get_project(pk), detail=True)

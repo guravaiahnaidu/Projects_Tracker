@@ -507,7 +507,11 @@ export default function Overview({
                       <div className="text-[15px]">
                         <span className="font-bold">{p.done}%</span> done
                       </div>
-                      <div className="text-sm text-muted">{status === "not-started" ? startsInLabel(p) : `${time}% of time used`}</div>
+                      <div className="text-sm text-muted">{status === "not-started"
+                          ? startsInLabel(p)
+                          : p.startOffset === null || p.endOffset === null
+                            ? "No schedule set"
+                            : `${time}% of time used`}</div>
                     </div>
                   </button>
                 </li>

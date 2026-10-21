@@ -237,6 +237,8 @@ export interface ApiProject {
   start_offset?: number | null; // not used by the UI: offsets are derived from the dates and the server's today
   end_offset?: number | null;
   progress: number;
+  effective_progress?: number; // progress, or task completion while progress is 0
+  task_stats?: { total: number; done: number; started: number };
   decision: string;
   objectives?: { id: number; description: string }[];
   members?: { id: number; member_id: number; name: string; role: string }[];

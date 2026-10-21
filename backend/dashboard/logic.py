@@ -17,7 +17,7 @@ DUE_SOON_DAYS = 7
 
 
 def _projects():
-    return list(Project.objects.select_related("lead").order_by("id"))
+    return list(project_rules.with_task_stats(Project.objects.select_related("lead")).order_by("id"))
 
 
 def _tasks():
@@ -52,12 +52,13 @@ def _project_item(p, status, on, overdue_by_project):
     overdue = overdue_by_project.get(p.id, 0)
     overdue_text = f"{_plural(overdue, 'task')} overdue" if overdue else ""
     used = project_rules.time_used(p, on)
+    done = project_rules.progress(p)
     if status == "off-track":
-        subtitle = f"Behind schedule: {p.progress}% done with {used}% of the time used."
+        subtitle = f"Behind schedule: {done}% done with {used}% of the time used."
         if overdue_text:
             subtitle += f" {overdue_text}"
     else:
-        subtitle = overdue_text or f"{p.progress}% done with {used}% of the time used"
+        subtitle = overdue_text or f"{done}% done with {used}% of the time used"
     return {
         "key": f"p-{p.id}",
         "marker": "square-red" if status == "off-track" else "triangle-amber",

@@ -30,6 +30,16 @@ class ProjectRulesTests(ApiTestCase):
         for progress, expected in cases.items():
             self.assertEqual(rules.health(self.p(-50, 50, progress), self.ON), expected, progress)
 
+    def test_progress_falls_back_to_task_completion(self):
+        p = self.project(start=-50, end=50, progress=0)
+        for state in ("done", "done", "in-progress", "not-started"):
+            self.task(p, state=state)
+        p = Project.objects.get(pk=p.pk)
+        self.assertEqual(rules.progress(p), 50)
+        self.assertEqual(rules.health(p, rules.today()), "on-track")  # 50% used, 50% done
+        p.progress = 20  # a progress set on the project wins
+        self.assertEqual(rules.progress(p), 20)
+
     def test_health_not_started_only_when_no_time_and_no_progress(self):
         self.assertEqual(rules.health(self.p(10, 50, 0), self.ON), "not-started")
         self.assertEqual(rules.health(self.p(10, 50, 5), self.ON), "on-track")

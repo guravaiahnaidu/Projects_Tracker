@@ -816,7 +816,7 @@ function ProjectDetail({
   const commitProgress = async () => {
     if (committing.current || latestProgress.current === null) return;
     committing.current = true;
-    let sent = p.done;
+    let sent = p.progressSet;
     let ok = true;
     while (ok && latestProgress.current !== null && latestProgress.current !== sent) {
       const value = latestProgress.current;
