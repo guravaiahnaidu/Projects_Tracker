@@ -71,12 +71,13 @@ def task_fields(update: DailyUpdate, tasks: list) -> dict:
     """The update's lists and status with its tasks merged in."""
     by_state = defaultdict(list)
     for t in tasks:
-        by_state[t.state].append(t)
-    blocked = [f"{t.title}: {t.note}" if t.note else t.title for t in by_state[State.BLOCKED]]
+        # The task's "Description / Work notes" is the detail of the update, whatever the task's state.
+        by_state[t.state].append(f"{t.title}: {t.note}" if t.note else t.title)
+    blocked = by_state[State.BLOCKED]
     return {
-        "completed": _merged(update.completed, [t.title for t in by_state[State.DONE]]),
-        "in_progress": _merged(update.in_progress, [t.title for t in by_state[State.IN_PROGRESS]]),
-        "next_steps": _merged(update.next_steps, [t.title for t in by_state[State.NOT_STARTED]]),
+        "completed": _merged(update.completed, by_state[State.DONE]),
+        "in_progress": _merged(update.in_progress, by_state[State.IN_PROGRESS]),
+        "next_steps": _merged(update.next_steps, by_state[State.NOT_STARTED]),
         "blockers": _merged(update.blockers, blocked),
         "status": "Blocked" if blocked else update.status,
         "tasks": [{"id": t.id, "title": t.title, "state": t.state, "priority": t.priority} for t in tasks],

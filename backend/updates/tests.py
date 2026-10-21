@@ -238,6 +238,16 @@ class TasksFeedDailyUpdatesTests(ApiTestCase):
         self.assertEqual(u["status"], "Blocked")
         self.assertEqual(len(u["tasks"]), 3)
 
+    def test_task_notes_show_in_every_section(self):
+        self.add_task(title="A", state="done", note="Shipped to staging")
+        self.add_task(title="B", state="in-progress", note="Half the screens done")
+        self.add_task(title="D", note="Starts after review")
+        self.add_task(title="E")  # no note: the title alone
+        u = self.updates()[0]
+        self.assertEqual(u["completed"], ["A: Shipped to staging"])
+        self.assertEqual(u["in_progress"], ["B: Half the screens done"])
+        self.assertEqual(u["next_steps"], ["D: Starts after review", "E"])
+
     def test_past_work_date_lands_on_that_day_and_moves_with_edits(self):
         tid = self.add_task(work_date=day(-40).isoformat(), state="done")
         self.assertEqual([u["date"] for u in self.updates()], [day(-40).isoformat()])

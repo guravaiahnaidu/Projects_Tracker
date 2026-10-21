@@ -70,7 +70,9 @@ function StatusDot({ status }: { status: OverallStatus }) {
   );
 }
 
-const preview = (u: DailyUpdate) => u.completed[0] ?? u.inProgress[0] ?? u.nextSteps[0] ?? "No details shared";
+// A row whose only tasks are blocked still has details: its blockers (with the task notes) and any notes.
+const preview = (u: DailyUpdate) =>
+  u.completed[0] ?? u.inProgress[0] ?? u.nextSteps[0] ?? u.blockers[0] ?? u.notes ?? "No details shared";
 
 /* ---------- Side panel ---------- */
 
