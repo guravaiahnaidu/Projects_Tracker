@@ -560,7 +560,18 @@ function EmployeeForm({
   const picked = Object.keys(roles).length;
 
   return (
-    <form onSubmit={submit} noValidate className="space-y-5">
+    // An employee profile is not a login: keep the browser and password managers from offering saved
+    // usernames/passwords here (employees have no account; only managers sign in).
+    <form
+      onSubmit={submit}
+      noValidate
+      autoComplete="off"
+      data-form-type="other"
+      data-lpignore="true"
+      data-1p-ignore="true"
+      data-bwignore="true"
+      className="space-y-5"
+    >
       <fieldset className="space-y-4">
         <legend className={`${sectionTitle} mb-3`}>Identity and contact</legend>
         <label className={field}>
@@ -585,6 +596,7 @@ function EmployeeForm({
             <input
               type="email"
               inputMode="email"
+              name="employee-work-email"
               autoComplete="off"
               spellCheck={false}
               value={emailEdited ? email : suggested}
@@ -630,6 +642,7 @@ function EmployeeForm({
             <input
               type="tel"
               inputMode="tel"
+              name="employee-phone"
               autoComplete="off"
               value={phone}
               onChange={(e) => {
@@ -652,6 +665,7 @@ function EmployeeForm({
             Job title
             <input
               list="titles"
+              autoComplete="off"
               value={title}
               onChange={(e) => {
                 setTitle(e.target.value);
@@ -672,6 +686,7 @@ function EmployeeForm({
             Department
             <input
               list="departments"
+              autoComplete="off"
               value={department}
               onChange={(e) => {
                 setDepartment(e.target.value);
@@ -834,6 +849,7 @@ function EmployeeForm({
                 {on && (
                   <input
                     list="project-roles"
+                    autoComplete="off"
                     aria-label={`Role on ${p.name}`}
                     value={roles[p.id]}
                     readOnly={leads}
