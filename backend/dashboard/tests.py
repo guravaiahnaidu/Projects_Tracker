@@ -26,7 +26,7 @@ class DashboardTests(ApiTestCase):
         self.assertEqual(
             self.get("/dashboard/summary/").data,
             {"total": 0, "in_flight": 0, "not_started": 0, "off_track": 0, "watch": 0, "on_track": 0,
-             "overdue": 0, "due_today": 0, "blocked": 0, "stretched": 0},
+             "no_schedule": 0, "overdue": 0, "due_today": 0, "blocked": 0, "stretched": 0},
         )
         for path in ("attention", "key-dates", "team-workload", "decisions"):
             self.assertEqual(self.get(f"/dashboard/{path}/").data, {"results": [], "count": 0}, path)
@@ -49,10 +49,11 @@ class DashboardTests(ApiTestCase):
         self.task(half, lead, "a", state="done")
         self.task(half, lead, "b")
         s = self.get("/dashboard/summary/").data
-        self.assertEqual((s["total"], s["in_flight"], s["not_started"], s["on_track"]), (3, 2, 1, 2))
+        self.assertEqual((s["total"], s["in_flight"], s["not_started"], s["on_track"], s["no_schedule"]), (3, 2, 1, 0, 2))
         rows = {r["name"]: r for r in self.get("/projects/").data["results"]}
         self.assertEqual(rows["Idle"]["health"], "not-started")
-        self.assertEqual((rows["Busy"]["health"], rows["Busy"]["effective_progress"]), ("on-track", 0))
+        # Started but undated: no On/Off track label without a schedule to compare against.
+        self.assertEqual((rows["Busy"]["health"], rows["Busy"]["effective_progress"]), ("no-schedule", 0))
         self.assertEqual((rows["Half"]["effective_progress"], rows["Half"]["progress"]), (50, 0))
         self.assertEqual(rows["Half"]["task_stats"], {"total": 2, "done": 1, "started": 1})
 

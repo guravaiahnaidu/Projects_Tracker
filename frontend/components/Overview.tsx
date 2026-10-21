@@ -434,7 +434,7 @@ export default function Overview({
         <KpiCard
           value={s.inFlight}
           title="Projects in dev"
-          sub={`${s.total} in total, ${s.notStarted} not started`}
+          sub={`${s.total} in total, ${s.notStarted} not started${s.noSchedule ? `, ${s.noSchedule} without dates` : ""}`}
           bar="bg-st-blue"
           text="text-st-blue"
           onClick={() => onNavigate({ tab: "Projects" })}
@@ -509,8 +509,8 @@ export default function Overview({
                       </div>
                       <div className="text-sm text-muted">{status === "not-started"
                           ? startsInLabel(p)
-                          : p.startOffset === null || p.endOffset === null
-                            ? "No schedule set"
+                          : status === "no-schedule"
+                            ? "No start date or deadline"
                             : `${time}% of time used`}</div>
                     </div>
                   </button>

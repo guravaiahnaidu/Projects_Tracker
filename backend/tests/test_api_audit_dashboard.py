@@ -32,7 +32,7 @@ class DashboardAudit(AuditCase):
         def valid():
             r = self.get(S)
             self.expect(r, 200)
-            expected = {"total": 4, "in_flight": 3, "not_started": 1, "off_track": 1, "watch": 1, "on_track": 1, "overdue": 1, "due_today": 1, "blocked": 1, "stretched": 1}
+            expected = {"total": 4, "in_flight": 3, "not_started": 1, "off_track": 1, "watch": 1, "on_track": 1, "no_schedule": 0, "overdue": 1, "due_today": 1, "blocked": 1, "stretched": 1}
             self.assertEqual(r.data, expected)
             return 200
 

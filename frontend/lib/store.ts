@@ -154,6 +154,7 @@ export const mapSummary = (s: ApiSummary): Summary => ({
   offTrack: s.off_track,
   watch: s.watch,
   onTrack: s.on_track,
+  noSchedule: s.no_schedule ?? 0,
   overdue: s.overdue,
   dueToday: s.due_today,
   blocked: s.blocked,
@@ -531,6 +532,17 @@ function apply(data: Fetched) {
     next.histories = histories;
   }
   setState(next);
+}
+
+/**
+ * Show one project exactly as the server returned it from a write (e.g. adding a team member), so the panel
+ * updates as soon as the server confirms instead of after the scoped refetch. The refetch still follows.
+ */
+export function applyProject(p: ApiProject) {
+  const i = projects.findIndex((x) => x.id === String(p.id));
+  if (i < 0) return;
+  projects[i] = { ...mapProject(p), history: projects[i].history };
+  setState({ version: state.version + 1 });
 }
 
 let latest = 0;

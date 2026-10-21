@@ -7,7 +7,7 @@ import { mutate, numericId, SCOPES } from "@/lib/store";
 import { useNow, useProjectTeam } from "./hooks";
 import { control, dueText, FieldNote, STATES, teamOptions, TeamStatus, workDateProblem } from "./TasksView";
 import { DateField } from "./FormControls";
-import { ConfirmDialog } from "./ui";
+import { ConfirmDialog, Spinner } from "./ui";
 import { diffDays, wallClockIso } from "@/lib/serverClock";
 import { BLOCKED_NOTE_TOO_LONG, blockedNoteProblem, NOTE_MAX_LENGTH } from "@/lib/blockedNote";
 
@@ -399,10 +399,11 @@ export default function TaskEditor({
           <button
             type="submit"
             disabled={!dirty || busy}
+            aria-busy={busy}
             title={dirty ? "Save (Ctrl+Enter)" : "No changes yet"}
             className="rounded-lg bg-header px-4 py-2 text-[15px] font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-45 dark:bg-accent dark:text-header"
           >
-            {busy ? "Saving..." : "Save changes"}
+            <span aria-live="polite">{busy ? <><Spinner />Saving...</> : "Save changes"}</span>
           </button>
         </footer>
         {confirmDelete && (

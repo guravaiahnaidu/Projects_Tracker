@@ -49,6 +49,11 @@ const statusMeta: Record<ProjectStatus, { label: string; marker: ReactNode; bar:
     marker: <span className="h-2 w-2 rounded-full bg-st-green" aria-hidden />,
     bar: "bg-st-green",
   },
+  "no-schedule": {
+    label: "No schedule",
+    marker: <span className="h-2.5 w-2.5 rounded-full border-[1.5px] border-st-blue bg-st-blue/30" aria-hidden />,
+    bar: "bg-st-blue",
+  },
   "not-started": {
     label: "Not started",
     marker: <span className="h-2.5 w-2.5 rounded-full border-[1.5px] border-muted" aria-hidden />,
@@ -68,6 +73,11 @@ export function StatusBadge({ status }: { status: ProjectStatus }) {
   );
 }
 
+/** Small spinner shown next to "Saving..." / "Creating..." while a request is waiting for the server. */
+export function Spinner() {
+  return <span className="mr-2 inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-r-transparent align-[-2px]" aria-hidden />;
+}
+
 export function ProgressBar({ done, time, status }: { done: number; time: number; status: ProjectStatus }) {
   return (
     <div
@@ -76,7 +86,7 @@ export function ProgressBar({ done, time, status }: { done: number; time: number
       aria-label={`${done}% done, ${time}% of time used`}
     >
       <div className={`h-full rounded-full ${barColor(status)}`} style={{ width: `${done}%` }} />
-      {status !== "not-started" && (
+      {status !== "not-started" && status !== "no-schedule" && (
         <div
           className="absolute -top-1.5 h-6 w-0.5 -translate-x-1/2 rounded bg-ink"
           style={{ left: `${time}%` }}

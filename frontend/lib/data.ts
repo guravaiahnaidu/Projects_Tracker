@@ -3,7 +3,8 @@
 // Dates are kept as absolute ISO dates (startDate / endDate / dueDate). The *Offset fields are days from the
 // SERVER's today, derived by lib/store.ts from those dates and recomputed whenever the server's date changes.
 
-export type ProjectStatus = "off-track" | "watch" | "on-track" | "not-started";
+// "no-schedule": work has started but a start date or deadline is missing, so it can't be on or off track.
+export type ProjectStatus = "off-track" | "watch" | "on-track" | "no-schedule" | "not-started";
 export type TaskState = "not-started" | "in-progress" | "blocked" | "done";
 export type Priority = "Critical" | "High" | "Medium" | "Low";
 export const PRIORITIES: Priority[] = ["Low", "Medium", "High", "Critical"];
@@ -104,6 +105,7 @@ export function timeUsed(p: Project): number {
 export function projectStatus(p: Project): ProjectStatus {
   const used = timeUsed(p);
   if (used === 0 && p.done === 0 && p.tasksStarted === 0) return "not-started";
+  if (p.startOffset === null || p.endOffset === null) return "no-schedule";
   const gap = used - p.done;
   if (gap > 15) return "off-track";
   if (gap > 3) return "watch";
@@ -147,6 +149,7 @@ export interface Summary {
   offTrack: number;
   watch: number;
   onTrack: number;
+  noSchedule: number;
   overdue: number;
   dueToday: number;
   blocked: number;
@@ -169,6 +172,7 @@ export const emptySummary: Summary = {
   offTrack: 0,
   watch: 0,
   onTrack: 0,
+  noSchedule: 0,
   overdue: 0,
   dueToday: 0,
   blocked: 0,

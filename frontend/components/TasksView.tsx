@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type CSSProperties, type FormEvent } from "react";
+import { useRef, useState, type CSSProperties, type FormEvent } from "react";
 import { Combobox, DateField, type ComboOption } from "./FormControls";
 import {
   byDue,
@@ -20,7 +20,7 @@ import { addDaysIso, isoToLocalDate, wallClockIso } from "@/lib/serverClock";
 import { BLOCKED_NOTE_TOO_LONG, blockedNoteOrNull, blockedNoteProblem, NOTE_MAX_LENGTH } from "@/lib/blockedNote";
 import { useNow, useProjectTeam, type ProjectTeam } from "./hooks";
 import type { OpenRef } from "./Overview";
-import { Modal } from "./ui";
+import { Modal, Spinner } from "./ui";
 
 /* ---------- Groups ---------- */
 
@@ -565,6 +565,7 @@ export function NewTaskForm({
   const [touched, setTouched] = useState<Partial<Record<TaskField, boolean>>>({});
   const [attempted, setAttempted] = useState(false);
   const [saving, setSaving] = useState(false);
+  const submitting = useRef(false); // set synchronously, so a fast double click cannot create the task twice
   const [serverError, setServerError] = useState("");
   const [serverFields, setServerFields] = useState<Partial<Record<TaskField, string>>>({});
 
@@ -600,11 +601,12 @@ export function NewTaskForm({
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setAttempted(true);
-    if (saving) return;
+    if (saving || submitting.current) return;
     if (firstProblem) {
       document.getElementById(`nt-${firstProblem}`)?.focus();
       return;
     }
+    submitting.current = true;
     setSaving(true);
     setServerError("");
     setServerFields({});
@@ -630,6 +632,7 @@ export function NewTaskForm({
       for (const [k, msgs] of Object.entries(fields)) if (TASK_SERVER_FIELDS[k]) mapped[TASK_SERVER_FIELDS[k]] = msgs[0];
       setServerFields(mapped);
       setServerError(Object.keys(mapped).length ? "Please fix the highlighted fields." : errorMessage(err));
+      submitting.current = false;
       setSaving(false);
     }
   };
@@ -823,9 +826,10 @@ export function NewTaskForm({
         <button
           type="submit"
           disabled={saving}
+          aria-busy={saving}
           className="rounded-lg bg-header px-5 py-2.5 font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-accent dark:text-header"
         >
-          {saving ? "Creating..." : "Create task"}
+          <span aria-live="polite">{saving ? <><Spinner />Creating...</> : "Create task"}</span>
         </button>
       </div>
     </form>

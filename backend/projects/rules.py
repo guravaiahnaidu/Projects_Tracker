@@ -76,6 +76,9 @@ def health(project, on: date) -> str:
     # Not started only while no time has passed, nothing is done and no task has been picked up.
     if used == 0 and done == 0 and task_stats(project)["started"] == 0:
         return "not-started"
+    # Started, but without both dates there is no schedule to be on or off: say so rather than guess.
+    if project.start_date is None or project.end_date is None:
+        return "no-schedule"
     gap = used - done
     if gap > OFF_TRACK_GAP:
         return "off-track"
@@ -84,4 +87,4 @@ def health(project, on: date) -> str:
     return "on-track"
 
 
-HEALTH_RANK = {"off-track": 0, "watch": 1, "on-track": 2, "not-started": 3}
+HEALTH_RANK = {"off-track": 0, "watch": 1, "no-schedule": 2, "on-track": 3, "not-started": 4}

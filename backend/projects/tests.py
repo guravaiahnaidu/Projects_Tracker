@@ -45,6 +45,12 @@ class ProjectRulesTests(ApiTestCase):
         self.assertEqual(rules.health(self.p(10, 50, 5), self.ON), "on-track")
         self.assertEqual(rules.health(self.p(-10, 50, 0), self.ON), "off-track")  # 17% used, 0% done
 
+    def test_health_without_both_dates_is_no_schedule_not_on_track(self):
+        for start, end in ((None, None), (date(2025, 12, 1), None), (None, date(2026, 3, 1))):
+            p = Project(start_date=start, end_date=end, progress=40)
+            self.assertEqual(rules.health(p, self.ON), "no-schedule", (start, end))
+        self.assertEqual(rules.health(Project(progress=0), self.ON), "not-started")
+
 
 class ProjectApiTests(ApiTestCase):
     def valid(self, lead, **extra):
@@ -223,6 +229,17 @@ class ProjectApiTests(ApiTestCase):
         texts = set(project.activity.values_list("description", flat=True))
         self.assertIn("You added Pat to the team", texts)
         self.assertIn("You removed Pat from the team", texts)
+
+    def test_adding_a_member_returns_the_updated_team_size(self):
+        """The add response carries the new team, so the panel's Team size can update without a reload."""
+        project = self.project()
+        project.memberships.all().delete()  # a project with no team yet
+        person = self.member(name="Pat")
+        res = self.post(f"/projects/{project.id}/members/", {"member_id": person.id})
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual((res.data["member_count"], [m["name"] for m in res.data["members"]]), (1, ["Pat"]))
+        row = next(r for r in self.get("/projects/", detail=1).data["results"] if r["id"] == project.id)
+        self.assertEqual((row["member_count"], len(row["members"])), (1, 1))
 
     def test_removing_member_keeps_their_tasks(self):
         project = self.project()

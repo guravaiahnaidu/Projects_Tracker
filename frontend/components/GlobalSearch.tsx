@@ -27,7 +27,7 @@ interface Result {
 }
 
 const PER_CATEGORY = 5;
-const statusText = { "off-track": "Off track", watch: "Needs watching", "on-track": "On track", "not-started": "Not started" };
+const statusText = { "off-track": "Off track", watch: "Needs watching", "on-track": "On track", "no-schedule": "No schedule", "not-started": "Not started" };
 
 const dayLabel = (iso: string) => {
   const [y, m, d] = iso.split("-").map(Number);

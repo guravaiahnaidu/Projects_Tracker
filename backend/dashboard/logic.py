@@ -5,7 +5,7 @@ All functions take `on` (the calendar date) so tests can pin "today".
 
 from datetime import timedelta
 
-from members.models import Member
+from members.models import STRETCHED_THRESHOLD, Member
 from projects import rules as project_rules
 from projects.models import Project
 from tasks import rules as task_rules
@@ -36,10 +36,11 @@ def summary(on) -> dict:
         "off_track": health.count("off-track"),
         "watch": health.count("watch"),
         "on_track": health.count("on-track"),
+        "no_schedule": health.count("no-schedule"),  # started, but missing a start date or deadline
         "overdue": buckets.count("overdue"),
         "due_today": buckets.count("today"),
         "blocked": buckets.count("blocked"),
-        "stretched": Member.objects.filter(load__gt=100).count(),
+        "stretched": Member.objects.filter(load__gt=STRETCHED_THRESHOLD).count(),
     }
 
 
@@ -175,7 +176,7 @@ def weekly_brief(on) -> dict:
     at_risk.sort(key=lambda p: 0 if health[p.id] == "off-track" else 1)
     late = [t for t in tasks if task_rules.group(t, on) in ("overdue", "blocked")]
     late.sort(key=lambda t: (0 if task_rules.group(t, on) == "overdue" else 1, *task_rules.sort_key(t)))
-    stretched = list(Member.objects.filter(load__gt=100).order_by("-load"))
+    stretched = list(Member.objects.filter(load__gt=STRETCHED_THRESHOLD).order_by("-load"))
     decision_rows = decisions(on)
     due_in_week = sum(
         1

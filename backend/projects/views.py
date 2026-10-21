@@ -1,6 +1,6 @@
 from datetime import date
 
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import Q
 from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.response import Response
@@ -30,7 +30,7 @@ from .serializers import (
     with_related,
 )
 
-HEALTH_VALUES = ("off-track", "watch", "on-track", "not-started")
+HEALTH_VALUES = ("off-track", "watch", "on-track", "no-schedule", "not-started")
 
 
 def get_project(pk, detail: bool = True, lock: bool = False) -> Project:
@@ -72,18 +72,21 @@ class ProjectListView(APIView):
         health = params.get("health", "all")
         if health != "all":
             if health not in HEALTH_VALUES:
-                raise ValidationError({"health": "health must be all, off-track, watch, on-track or not-started."})
+                raise ValidationError({"health": "health must be all, off-track, watch, on-track, no-schedule or not-started."})
             rows = [r for r in rows if r["health"] == health]
 
         sort = params.get("sort", "attention")
+        # Ties fall back to the deadline (none last) and then the name, so the order is always the same.
+        deadline = lambda r: (r["end_date"] is None, r["end_date"] or "")  # noqa: E731
+        name = lambda r: r["name"].lower()  # noqa: E731
         if sort == "deadline":
-            rows.sort(key=lambda r: (r["end_date"] is None, r["end_date"] or ""))  # no deadline last
+            rows.sort(key=lambda r: (*deadline(r), name(r)))
         elif sort == "progress":
-            rows.sort(key=lambda r: -r["effective_progress"])
+            rows.sort(key=lambda r: (-r["effective_progress"], *deadline(r), name(r)))
         elif sort == "name":
-            rows.sort(key=lambda r: r["name"].lower())
+            rows.sort(key=name)
         elif sort == "attention":
-            rows.sort(key=lambda r: (rules.HEALTH_RANK[r["health"]], r["end_date"] is None, r["end_date"] or ""))
+            rows.sort(key=lambda r: (rules.HEALTH_RANK[r["health"]], *deadline(r), name(r)))
         else:
             raise ValidationError({"sort": "sort must be attention, deadline, progress or name."})
         return Response({"results": rows, "count": len(rows)})
@@ -218,9 +221,14 @@ class ProjectMemberListView(APIView):
         ser = MembershipCreateSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         member, role = ser.validated_data["member"], ser.validated_data["role"]
+        duplicate = ValidationError({"member_id": f"{member.name} is already on this project."})
         if ProjectMember.objects.filter(project=project, member=member).exists():
-            raise ValidationError({"member_id": f"{member.name} is already on this project."})
-        ProjectMember.objects.create(project=project, member=member, role=role)
+            raise duplicate
+        try:
+            with transaction.atomic():  # savepoint: a concurrent add of the same person is a 400, not a 500
+                ProjectMember.objects.create(project=project, member=member, role=role)
+        except IntegrityError:
+            raise duplicate
         log("membership.added", "project", project.id, f"You added {member.name} to the team", project=project)
         return detail_response(pk, status=201)
 

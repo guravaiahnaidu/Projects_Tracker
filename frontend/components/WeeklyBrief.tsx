@@ -43,6 +43,7 @@ const statusTone: Record<ProjectStatus, Tone> = {
   "off-track": "red",
   watch: "amber",
   "on-track": "green",
+  "no-schedule": "slate",
   "not-started": "slate",
 };
 
@@ -50,6 +51,7 @@ const statusLabel: Record<ProjectStatus, string> = {
   "off-track": "Off track",
   watch: "Needs watching",
   "on-track": "On track",
+  "no-schedule": "No schedule",
   "not-started": "Not started",
 };
 

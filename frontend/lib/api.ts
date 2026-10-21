@@ -282,6 +282,7 @@ export interface ApiSummary {
   off_track: number;
   watch: number;
   on_track: number;
+  no_schedule?: number;
   overdue: number;
   due_today: number;
   blocked: number;

@@ -18,13 +18,13 @@ import {
   agoLabel,
 } from "@/lib/data";
 import { api, ApiError, errorMessage, type ProjectPatch } from "@/lib/api";
-import { loadMoreProjectHistory, loadProjectHistory, memberId, mutate, nowMs, numericId, SCOPES, useStore, type Scope } from "@/lib/store";
+import { applyProject, loadMoreProjectHistory, loadProjectHistory, memberId, mutate, nowMs, numericId, SCOPES, useStore, type Scope } from "@/lib/store";
 import { addDaysIso, isoToLocalDate, minutesBetween } from "@/lib/serverClock";
 import { Combobox, DateField } from "./FormControls";
 import { useNow } from "./hooks";
 import type { OpenRef } from "./Overview";
 import { addDays, control, dueText, NewTaskForm, taskGroup } from "./TasksView";
-import { barColor, ConfirmDialog, Modal, ProgressBar, StatusBadge } from "./ui";
+import { barColor, ConfirmDialog, Modal, ProgressBar, Spinner, StatusBadge } from "./ui";
 
 /* ---------- Helpers ---------- */
 
@@ -89,6 +89,7 @@ const STATUS_FILTERS: { value: ProjectStatus | "all"; label: string }[] = [
   { value: "off-track", label: "Off track" },
   { value: "watch", label: "Needs watching" },
   { value: "on-track", label: "On track" },
+  { value: "no-schedule", label: "No schedule" },
   { value: "not-started", label: "Not started" },
 ];
 
@@ -101,17 +102,21 @@ const SORTS: { value: Sort; label: string }[] = [
   { value: "name", label: "Name A to Z" },
 ];
 
-const attentionRank: ProjectStatus[] = ["off-track", "watch", "on-track", "not-started"];
+const attentionRank: ProjectStatus[] = ["off-track", "watch", "no-schedule", "on-track", "not-started"];
 
-// Soonest deadline first; projects without one go last.
-const byDeadline = (a: Project, b: Project) => (a.endOffset ?? Infinity) - (b.endOffset ?? Infinity) || 0;
+const byName = (a: Project, b: Project) => a.name.localeCompare(b.name);
+// Soonest deadline first; projects without one go last (a missing date is never treated as a deadline).
+// (Comparing two Infinity offsets would give NaN, so missing deadlines are compared explicitly.)
+const byDeadline = (a: Project, b: Project) =>
+  a.endOffset === null || b.endOffset === null ? Number(a.endOffset === null) - Number(b.endOffset === null) : a.endOffset - b.endOffset;
 
+// Every sort ends with the name, so equal values (no deadline, same progress) always come out in the same order.
 const sorters: Record<Sort, (a: Project, b: Project) => number> = {
   attention: (a, b) =>
-    attentionRank.indexOf(projectStatus(a)) - attentionRank.indexOf(projectStatus(b)) || byDeadline(a, b),
-  deadline: (a, b) => byDeadline(a, b),
-  progress: (a, b) => b.done - a.done,
-  name: (a, b) => a.name.localeCompare(b.name),
+    attentionRank.indexOf(projectStatus(a)) - attentionRank.indexOf(projectStatus(b)) || byDeadline(a, b) || byName(a, b),
+  deadline: (a, b) => byDeadline(a, b) || byName(a, b),
+  progress: (a, b) => b.done - a.done || byDeadline(a, b) || byName(a, b),
+  name: byName,
 };
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
@@ -129,6 +134,7 @@ export function healthPoints(p: Project): string[] {
       "off-track": `Behind schedule: ${p.done}% done with ${used}% of the time used`,
       watch: `Slightly behind: ${p.done}% done with ${used}% of the time used`,
       "on-track": `On schedule: ${p.done}% done with ${used}% of the time used`,
+      "no-schedule": `${p.done}% done; add a start date and deadline to track the schedule`,
       "not-started": startsInLabel(p),
     }[status],
   ];
@@ -203,7 +209,7 @@ function ProjectCard({
       </div>
       <div className="mt-1.5 flex flex-wrap justify-between gap-x-4 text-[13px] text-muted">
         <span>
-          {p.done}% done{status !== "not-started" && ` · ${used}% of time used`}
+          {p.done}% done{status !== "not-started" && status !== "no-schedule" && ` · ${used}% of time used`}
         </span>
         <span suppressHydrationWarning>{now && (p.endDate ? `Due ${longDate(isoToLocalDate(p.endDate))}` : "No deadline")}</span>
       </div>
@@ -782,6 +788,8 @@ function ProjectDetail({
   const [dragProgress, setDragProgress] = useState<number | null>(null);
   const [decisionDraft, setDecisionDraft] = useState<string | null>(null);
   const committing = useRef(false);
+  const addingMember = useRef(false); // blocks a second "Add to team" before the first one is answered
+  const [memberPending, setMemberPending] = useState(false);
   const latestProgress = useRef<number | null>(null); // newest slider value, readable while a save is running
   const pid = numericId(p.id);
   const feed = useStore().histories[p.id];
@@ -1047,8 +1055,14 @@ function ProjectDetail({
           className="mt-4 flex flex-wrap gap-3"
           onSubmit={(e) => {
             e.preventDefault();
-            if (busy || !memberToAdd) return;
-            void run(() => api.addProjectMember(pid, { member_id: memberId(memberToAdd), role: newRole.trim() }), SCOPES.projectMember).then((ok) => {
+            if (busy || !memberToAdd || addingMember.current) return;
+            addingMember.current = true;
+            setMemberPending(true);
+            // The server answers with the updated project: show it (team list and Team size) right away.
+            const add = async () => applyProject(await api.addProjectMember(pid, { member_id: memberId(memberToAdd), role: newRole.trim() }));
+            void run(add, SCOPES.projectMember).then((ok) => {
+              addingMember.current = false;
+              setMemberPending(false);
               if (ok) {
                 setNewMember("");
                 setNewRole("");
@@ -1068,8 +1082,8 @@ function ProjectDetail({
             aria-label="Role"
             className={`${control} min-w-[10rem] flex-1 placeholder:text-muted`}
           />
-          <button type="submit" disabled={busy} className={`${outlineBtn} h-10 disabled:cursor-not-allowed disabled:opacity-60`}>
-            Add to team
+          <button type="submit" disabled={busy} aria-busy={memberPending} className={`${outlineBtn} h-10 disabled:cursor-not-allowed disabled:opacity-60`}>
+            <span aria-live="polite">{memberPending ? <><Spinner />Adding...</> : "Add to team"}</span>
           </button>
         </form>
       )}
@@ -1174,7 +1188,7 @@ export function ProjectsView({
   const [phase, setPhase] = useState<ProjectPhase | "all">("all");
   const [selected, setSelected] = useState<string | null>(focusId);
   const [creating, setCreating] = useState(false);
-  const [addingTask, setAddingTask] = useState(false);
+  const [addingTaskFor, setAddingTaskFor] = useState<string | null>(null); // project the New Task dialog was opened for
   const [editingProject, setEditingProject] = useState<Project | null>(null);
   const [notice, setNotice] = useState("");
   const detailRef = useRef<HTMLDivElement>(null);
@@ -1195,6 +1209,9 @@ export function ProjectsView({
     setPhase("all");
   };
   const current = list.find((p) => p.id === selected) ?? list[0];
+  // The New Task dialog belongs to the project it was opened for: showing another project closes it, so its
+  // heading, project, employee list and fields can never describe different projects.
+  if (addingTaskFor !== null && addingTaskFor !== current?.id) setAddingTaskFor(null);
 
   const flash = (text: string) => {
     setNotice(text);
@@ -1302,7 +1319,7 @@ export function ProjectsView({
               p={current}
               now={now}
               onOpenTask={(id) => onOpen({ kind: "task", id })}
-              onAddTask={() => setAddingTask(true)}
+              onAddTask={() => setAddingTaskFor(current.id)}
               onEdit={() => setEditingProject(current)}
             />
           </div>
@@ -1343,9 +1360,14 @@ export function ProjectsView({
           }}
         />
       )}
-      {addingTask && current && (
-        <Modal title={`New task for ${current.name}`} onClose={() => setAddingTask(false)} wide>
-          <NewTaskForm defaultProjectId={current.id} onCreated={() => setAddingTask(false)} onCancel={() => setAddingTask(false)} />
+      {addingTaskFor !== null && current?.id === addingTaskFor && (
+        <Modal title={`New task for ${current.name}`} onClose={() => setAddingTaskFor(null)} wide>
+          <NewTaskForm
+            key={current.id}
+            defaultProjectId={current.id}
+            onCreated={() => setAddingTaskFor(null)}
+            onCancel={() => setAddingTaskFor(null)}
+          />
         </Modal>
       )}
     </div>
