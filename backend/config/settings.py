@@ -173,6 +173,10 @@ if os.environ.get("DJANGO_DB_ENGINE", "sqlite").strip().lower() == "postgresql":
             "HOST": os.environ.get("DJANGO_DB_HOST", "localhost"),
             "PORT": os.environ.get("DJANGO_DB_PORT", "5432"),
             "OPTIONS": {"sslmode": os.environ.get("DJANGO_DB_SSLMODE", "prefer")},
+            # Reuse a connection for this many seconds instead of opening a new (TLS) one on every request; a hosted
+            # database far away makes each new connection cost hundreds of ms. 0 = close after each request.
+            "CONN_MAX_AGE": int(os.environ.get("DJANGO_DB_CONN_MAX_AGE", "60")),
+            "CONN_HEALTH_CHECKS": True,  # a reused connection the server has dropped is replaced, not an error
         }
     }
 else:
