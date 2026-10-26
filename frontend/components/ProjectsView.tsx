@@ -780,6 +780,7 @@ function ProjectDetail({
 }) {
   const [objective, setObjective] = useState("");
   const candidates = team.filter((m) => !p.members.some((x) => x.name === m.name));
+  const [selectedMemberKey, setSelectedMemberKey] = useState("");
   const [newMember, setNewMember] = useState("");
   const [newRole, setNewRole] = useState("");
   const [busy, setBusy] = useState(false);
@@ -804,6 +805,7 @@ function ProjectDetail({
   const used = timeUsed(live);
   const openWork = tasks.filter((t) => t.projectId === p.id && t.state !== "done").sort(byDue);
   const memberToAdd = newMember || candidates[0]?.name || "";
+  const selectedMember = p.members.find((m) => (m.memberId === undefined ? m.name : String(m.memberId)) === selectedMemberKey);
 
   /** Send one change to the server, refetch, and show the server's message if it was refused. */
   const run = async (write: () => Promise<unknown>, scope: readonly Scope[] = SCOPES.projectEdit) => {
@@ -1030,26 +1032,47 @@ function ProjectDetail({
       </form>
 
       <h3 className={`${sectionTitle} mt-6`}>Team and roles</h3>
-      <ul className="mt-1 divide-y divide-line border-b border-line">
-        {p.members.map((m) => (
-          <li key={m.name} className="flex items-center justify-between gap-4 py-2.5 text-[15px]">
-            <span>{m.name}</span>
+      <div className="mt-2">
+        <select
+          value={selectedMemberKey}
+          onChange={(e) => setSelectedMemberKey(e.target.value)}
+          aria-label="Select team member"
+          className={`${control} w-full`}
+        >
+          <option value="">Select team member</option>
+          {p.members.map((m) => (
+            <option key={m.memberId ?? m.name} value={m.memberId === undefined ? m.name : String(m.memberId)}>
+              {m.name}
+            </option>
+          ))}
+        </select>
+        {selectedMember ? (
+          <div className="mt-2 flex items-center justify-between gap-4 border-b border-line py-2.5 text-[15px]">
+            <span>{selectedMember.name}</span>
             <span className="flex items-center gap-3 text-muted">
-              {m.role}
-              {m.name !== p.lead && (
+              {selectedMember.role}
+              {selectedMember.name !== p.lead && (
                 <button
-                  onClick={() => void run(() => api.removeProjectMember(pid, m.memberId ?? memberId(m.name)), SCOPES.projectMember)}
+                  onClick={() =>
+                    void run(() => api.removeProjectMember(pid, selectedMember.memberId ?? memberId(selectedMember.name)), SCOPES.projectMember).then(
+                      (ok) => ok && setSelectedMemberKey(""),
+                    )
+                  }
                   disabled={busy}
-                  aria-label={`Remove ${m.name}`}
+                  aria-label={`Remove ${selectedMember.name}`}
                   className="rounded px-1 text-lg leading-none hover:bg-track hover:text-ink"
                 >
                   ×
                 </button>
               )}
             </span>
-          </li>
-        ))}
-      </ul>
+          </div>
+        ) : (
+          <p className="mt-1 text-sm text-muted">
+            {p.members.length ? "Choose a team member to view their role." : "No team members yet."}
+          </p>
+        )}
+      </div>
       {candidates.length > 0 && (
         <form
           className="mt-4 flex flex-wrap gap-3"
