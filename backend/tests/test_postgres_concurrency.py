@@ -69,6 +69,15 @@ class PostgresConcurrencyTests(TransactionTestCase):
         self.assertEqual(codes, [201, 409])  # the loser hits the unique constraint: 409, never 500
         self.assertEqual(Member.objects.filter(name="Same Name").count(), 1)
 
+    def test_concurrent_adds_of_the_same_project_member_create_one_assignment(self):
+        person = Member.objects.create(name="Same Person", title="T", department="D")
+        path = f"/projects/{self.project.id}/members/"
+        body = {"member_id": person.id}
+        codes = sorted(race([self.client_call("post", path, body)] * 2))
+        self.assertEqual(codes, [201, 400])
+        self.assertEqual(ProjectMember.objects.filter(project=self.project, member=person).count(), 1)
+        self.assertEqual(self.project.activity.filter(action="membership.added").count(), 1)
+
     def test_a_decision_is_resolved_once(self):
         Project.objects.filter(pk=self.project.pk).update(decision="Approve it")
         path = f"/projects/{self.project.id}/decision/resolve/"

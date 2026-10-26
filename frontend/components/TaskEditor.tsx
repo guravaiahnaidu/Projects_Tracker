@@ -49,6 +49,7 @@ export default function TaskEditor({
   const [attempted, setAttempted] = useState(false); // show validation only after the first save attempt
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [busy, setBusy] = useState(false);
+  const submitting = useRef(false);
   const [serverError, setServerError] = useState("");
   const [serverFields, setServerFields] = useState<Record<string, string>>({});
   const projectTeam = useProjectTeam(projectId);
@@ -110,6 +111,8 @@ export default function TaskEditor({
 
   // The server records every change in the activity log, so the editor only sends what changed.
   const run = async (write: () => Promise<unknown>) => {
+    if (submitting.current) return;
+    submitting.current = true;
     setBusy(true);
     setServerError("");
     setServerFields({});
@@ -120,6 +123,7 @@ export default function TaskEditor({
       const fields = e instanceof ApiError ? e.fields : {};
       setServerFields(Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, v[0]])));
       setServerError(Object.keys(fields).length ? "Please fix the highlighted fields." : errorMessage(e));
+      submitting.current = false;
       setBusy(false);
     }
   };
