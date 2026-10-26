@@ -804,7 +804,7 @@ function ProjectDetail({
   const status = projectStatus(live);
   const used = timeUsed(live);
   const openWork = tasks.filter((t) => t.projectId === p.id && t.state !== "done").sort(byDue);
-  const memberToAdd = newMember || candidates[0]?.name || "";
+  const memberToAdd = newMember;
   const selectedMember = p.members.find((m) => (m.memberId === undefined ? m.name : String(m.memberId)) === selectedMemberKey);
 
   /** Send one change to the server, refetch, and show the server's message if it was refused. */
@@ -1093,9 +1093,10 @@ function ProjectDetail({
             });
           }}
         >
-          <select value={memberToAdd} onChange={(e) => setNewMember(e.target.value)} aria-label="Person" className={`${control} min-w-[10rem] flex-1`}>
+          <select value={newMember} onChange={(e) => setNewMember(e.target.value)} aria-label="Employee to add" className={`${control} min-w-[10rem] flex-1`}>
+            <option value="">Select employee</option>
             {candidates.map((m) => (
-              <option key={m.name}>{m.name}</option>
+              <option key={m.name} value={m.name}>{m.name}</option>
             ))}
           </select>
           <input
@@ -1105,7 +1106,7 @@ function ProjectDetail({
             aria-label="Role"
             className={`${control} min-w-[10rem] flex-1 placeholder:text-muted`}
           />
-          <button type="submit" disabled={busy} aria-busy={memberPending} className={`${outlineBtn} h-10 disabled:cursor-not-allowed disabled:opacity-60`}>
+          <button type="submit" disabled={busy || !memberToAdd} aria-busy={memberPending} className={`${outlineBtn} h-10 disabled:cursor-not-allowed disabled:opacity-60`}>
             <span aria-live="polite">{memberPending ? <><Spinner />Adding...</> : "Add to team"}</span>
           </button>
         </form>
