@@ -126,6 +126,7 @@ export function mapProject(p: ApiProject, today: string = serverToday()): Projec
     progressSet: p.progress,
     tasksStarted: p.task_stats?.started ?? 0,
     decision: p.decision || undefined,
+    accessUrl: p.access_url ?? "",
     objectives: (p.objectives ?? []).map((o) => o.description),
     members: (p.members ?? []).map((m) => ({ name: m.name, role: m.role, memberId: m.member_id })),
     history: [],
@@ -594,6 +595,7 @@ export function ensureLoaded() {
  *  - decision: set/resolve/undo change the project's decision, activity (undo deletes an event), the
  *    decisions/attention figures and the decision history (resolve adds a record, undo removes it).
  *  - review: opening a daily update marks it reviewed; feedback also writes an activity entry.
+ *  - shareUpdate: a new daily update row and its "shared a daily update" activity entry.
  *  - objective, projectMember: only the project (objectives/members) and its history change.
  *  - newProject: a new project row, its first history entry and the dashboard totals.
  *  - newEmployee: the person, their project memberships, activity, workload figures and department list.
@@ -606,6 +608,7 @@ export const SCOPES = {
   decision: ["projects", "activity", "dashboard", "decisionHistory"],
   review: ["dailyUpdates"],
   feedback: ["dailyUpdates", "activity"],
+  shareUpdate: ["dailyUpdates", "activity"],
   objective: ["projects", "activity"],
   projectMember: ["projects", "activity"],
   newProject: ["projects", "activity", "dashboard"],

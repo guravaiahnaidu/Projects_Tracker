@@ -495,3 +495,61 @@ class DecisionHistoryApiTests(ApiTestCase):
         self.assertEqual(self.get("/decision-history/", limit=1001).status_code, 400)
         ids = [r["id"] for off in (0, 1, 2) for r in self.get("/decision-history/", limit=1, offset=off).data["results"]]
         self.assertEqual(len(ids), len(set(ids)))
+
+
+class ProjectAccessApiTests(ApiTestCase):
+    """Project URL / username / password: optional, encrypted at rest, never in the project payload."""
+
+    LOGIN = {"access_url": "https://app.example.com", "access_username": "admin", "access_password": "s3cret!"}
+
+    def create(self, **extra):
+        return self.post("/projects/", {"name": "Access", "start_date": day(-5).isoformat(), **extra})
+
+    def test_projects_without_access_details_work(self):
+        res = self.create()
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual((res.data["access_url"], res.data["has_access_login"]), ("", False))
+        self.assertEqual(self.get(f"/projects/{res.data['id']}/access/").data, {"username": "", "password": ""})
+
+    def test_create_stores_login_encrypted_and_hides_it_from_the_payload(self):
+        res = self.create(**self.LOGIN)
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual((res.data["access_url"], res.data["has_access_login"]), (self.LOGIN["access_url"], True))
+        self.assertNotIn("s3cret!", str(res.data))
+        row = Project.objects.get(pk=res.data["id"])
+        self.assertNotIn("s3cret!", row.access_password_enc)
+        self.assertNotIn("admin", row.access_username_enc)
+        access = self.get(f"/projects/{row.pk}/access/")
+        self.assertEqual(access.data, {"username": "admin", "password": "s3cret!"})
+        self.assertEqual(access["Cache-Control"], "no-store")
+        self.assertNotIn("s3cret!", str(self.get("/projects/", detail=1).data))
+
+    def test_url_must_be_http_or_https(self):
+        for bad in ("not a url", "ftp://example.com", "javascript:alert(1)", "example.com"):
+            res = self.create(access_url=bad)
+            self.assertEqual(res.status_code, 400, bad)
+            self.assertIn("access_url", res.data["error"]["fields"])
+        self.assertEqual(self.create(access_url="http://example.com/login").status_code, 201)
+
+    def test_edit_changes_only_what_was_sent_and_logs_without_values(self):
+        pid = self.create(**self.LOGIN).data["id"]
+        res = self.patch(f"/projects/{pid}/", {"access_password": "new-pass"})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(self.get(f"/projects/{pid}/access/").data, {"username": "admin", "password": "new-pass"})
+        self.assertEqual(res.data["access_url"], self.LOGIN["access_url"])
+        logged = " ".join(ActivityLog.objects.values_list("description", flat=True))
+        self.assertIn("You updated the login details of Access", logged)
+        self.assertNotIn("new-pass", logged)
+        self.assertNotIn("s3cret!", logged)
+
+    def test_resending_unchanged_values_is_not_a_change(self):
+        pid = self.create(**self.LOGIN).data["id"]
+        before = ActivityLog.objects.count()
+        self.assertEqual(self.patch(f"/projects/{pid}/", dict(self.LOGIN)).status_code, 200)
+        self.assertEqual(ActivityLog.objects.count(), before)
+
+    def test_login_can_be_cleared(self):
+        pid = self.create(**self.LOGIN).data["id"]
+        res = self.patch(f"/projects/{pid}/", {"access_url": "", "access_username": "", "access_password": ""})
+        self.assertEqual((res.data["access_url"], res.data["has_access_login"]), ("", False))
+        self.assertEqual(Project.objects.get(pk=pid).access_password_enc, "")

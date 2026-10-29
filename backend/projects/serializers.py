@@ -1,6 +1,14 @@
+from urllib.parse import urlparse
+
 from rest_framework import serializers
 
-from common.limits import PROJECT_DECISION_MAX, PROJECT_DESCRIPTION_MAX
+from common import secrets
+from common.limits import (
+    PROJECT_ACCESS_CREDENTIAL_MAX,
+    PROJECT_ACCESS_URL_MAX,
+    PROJECT_DECISION_MAX,
+    PROJECT_DESCRIPTION_MAX,
+)
 from common.params import ID_MAX
 from members.models import Member
 from tasks import rules as task_rules
@@ -17,7 +25,41 @@ def _clean(value: str) -> str:
     return " ".join(value.split())
 
 
-class ProjectCreateSerializer(serializers.Serializer):
+class AccessFields(serializers.Serializer):
+    """Project URL, username and password. The login is stored encrypted: `validate_access` swaps the plain
+    username / password for the model's encrypted columns, and on edit drops values that did not change."""
+
+    access_url = serializers.URLField(
+        required=False, allow_blank=True, max_length=PROJECT_ACCESS_URL_MAX,
+        error_messages={"invalid": "Enter a valid URL, e.g. https://domain.com."},
+    )
+    access_username = serializers.CharField(
+        required=False, allow_blank=True, trim_whitespace=False, max_length=PROJECT_ACCESS_CREDENTIAL_MAX
+    )
+    access_password = serializers.CharField(
+        required=False, allow_blank=True, trim_whitespace=False, max_length=PROJECT_ACCESS_CREDENTIAL_MAX
+    )
+
+    def validate_access_url(self, value):
+        value = value.strip()
+        if value and urlparse(value).scheme not in ("http", "https"):
+            raise serializers.ValidationError("The URL must start with http:// or https://.")
+        return value
+
+    def validate_access(self, attrs, project=None):
+        for plain, column in (("access_username", "access_username_enc"), ("access_password", "access_password_enc")):
+            if plain not in attrs:
+                continue
+            value = attrs.pop(plain)
+            if project is not None and value == secrets.decrypt(getattr(project, column)):
+                continue  # unchanged
+            attrs[column] = secrets.encrypt(value)
+        if project is not None and attrs.get("access_url") == project.access_url:
+            del attrs["access_url"]
+        return attrs
+
+
+class ProjectCreateSerializer(AccessFields):
     name = serializers.CharField(
         max_length=200, error_messages={"blank": "Enter a project name.", "required": "Enter a project name."}
     )
@@ -59,10 +101,10 @@ class ProjectCreateSerializer(serializers.Serializer):
         start, end = attrs["start_date"], attrs["end_date"]
         if start and end and end <= start:
             raise serializers.ValidationError({"end_date": DEADLINE_MESSAGE})
-        return attrs
+        return self.validate_access(attrs)
 
 
-class ProjectUpdateSerializer(serializers.Serializer):
+class ProjectUpdateSerializer(AccessFields):
     name = serializers.CharField(max_length=200, required=False)
     department = serializers.CharField(max_length=120, required=False)
     client = serializers.CharField(max_length=120, required=False, allow_blank=True)
@@ -105,7 +147,7 @@ class ProjectUpdateSerializer(serializers.Serializer):
         end = attrs.get("end_date", self.instance.end_date)
         if start and end and end <= start:
             raise serializers.ValidationError({"end_date": DEADLINE_MESSAGE})
-        return attrs
+        return self.validate_access(attrs, self.instance)
 
 
 class DecisionSerializer(serializers.Serializer):
@@ -201,6 +243,9 @@ def project_payload(project: Project, on=None, detail: bool = False) -> dict:
         "effective_progress": rules.progress(project),  # falls back to task completion while progress is 0
         "task_stats": rules.task_stats(project),
         "decision": project.decision,
+        # The login itself never appears here (see ProjectAccessView); only whether one is saved.
+        "access_url": project.access_url,
+        "has_access_login": bool(project.access_username_enc or project.access_password_enc),
         "time_used": rules.time_used(project, on),
         "health": rules.health(project, on),
         "member_count": len(project.memberships.all()),

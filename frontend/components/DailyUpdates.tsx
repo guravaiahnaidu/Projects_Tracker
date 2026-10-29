@@ -19,6 +19,7 @@ import { loadMoreDailyUpdates, useStore } from "@/lib/store";
 import LoadMoreFooter from "./LoadMoreFooter";
 import { useNow } from "./hooks";
 import { control } from "./TasksView";
+import WorkUpdateForm from "./WorkUpdateForm";
 
 /* ---------- Formatting ---------- */
 
@@ -298,6 +299,7 @@ export default function DailyUpdates({ initialSelected }: { initialSelected?: st
   const [project, setProject] = useState("all");
   const [review, setReview] = useState<ReviewFilter>("all");
   const [selected, setSelected] = useState<string | null>(initialSelected ?? null);
+  const [adding, setAdding] = useState(false); // the Employee Work Update form is open
   const sectionRef = useRef<HTMLElement>(null);
 
   // Opened from the navbar search: bring the list into view (the panel opens on its own).
@@ -348,6 +350,7 @@ export default function DailyUpdates({ initialSelected }: { initialSelected?: st
           .includes(q)),
   );
   const newCount = newUpdates; // counted by the server over ALL updates, not just the loaded pages
+  const empty = updates.length === 0 && feed.count === 0; // nothing shared yet: the empty state replaces the filters
   const dates = updates.map((u) => u.date); // newest first
 
   const open = (u: DailyUpdate) => setSelected(u.id);
@@ -366,131 +369,162 @@ export default function DailyUpdates({ initialSelected }: { initialSelected?: st
 
   return (
     <section ref={sectionRef} className="scroll-mt-4 rounded-xl border border-line bg-surface p-5 shadow-sm transition-shadow duration-150 hover:shadow-md">
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div>
+      <header className="flex flex-wrap items-start justify-between gap-3 border-b border-line pb-4">
+        <div className="min-w-0">
           <h2 className="flex flex-wrap items-center gap-2 text-lg font-bold">
-            Daily work updates
+            Daily Work Summary
             {newCount > 0 && (
               <span className="rounded-full bg-st-blue/12 px-2 py-0.5 text-xs font-semibold text-st-blue">{newCount} new</span>
             )}
           </h2>
-          <p className="mt-0.5 text-sm text-muted">Review daily progress, completed work and manager feedback.</p>
+          <p className="mt-0.5 text-sm text-muted">Record project work and review manager feedback.</p>
         </div>
-        <div className="text-right text-sm">
-          <div className="font-semibold">{longDay(today)}</div>
+        <div className="flex items-center gap-4">
+          <span className="hidden text-sm font-semibold md:inline">{longDay(today)}</span>
+          <button
+            type="button"
+            onClick={() => setAdding(true)}
+            aria-haspopup="dialog"
+            className="inline-flex items-center gap-1.5 rounded-lg bg-header px-4 py-2 text-sm font-semibold text-white shadow-sm hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-st-blue/40 dark:bg-accent dark:text-header"
+          >
+            <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden>
+              <path d="M10 3.75a.75.75 0 0 1 .75.75v4.75h4.75a.75.75 0 0 1 0 1.5h-4.75v4.75a.75.75 0 0 1-1.5 0v-4.75H4.5a.75.75 0 0 1 0-1.5h4.75V4.5a.75.75 0 0 1 .75-.75Z" />
+            </svg>
+            Add Summary
+          </button>
         </div>
       </header>
 
-      <div className="mt-4 flex flex-wrap items-center gap-2.5">
-        <input
-          type="search"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search updates"
-          aria-label="Search updates"
-          className={`${control} min-w-[12rem] flex-1`}
-        />
-        <div className="flex items-center gap-1">
-          <button onClick={() => stepDate(-1)} aria-label="Previous update date" className="h-10 rounded-lg border border-line px-2.5 hover:bg-track">
-            ‹
-          </button>
-          <input
-            type="date"
-            value={date}
-            max={today}
-            onChange={(e) => setDate(e.target.value)}
-            aria-label="Filter by date"
-            className={`${control} w-40`}
-          />
-          <button onClick={() => stepDate(1)} aria-label="Next update date" className="h-10 rounded-lg border border-line px-2.5 hover:bg-track">
-            ›
-          </button>
-          {date && (
-            <button onClick={() => setDate("")} className="px-2 text-sm font-medium text-st-blue hover:underline">
-              All dates
-            </button>
-          )}
+      {empty ? (
+        <div className="flex flex-col items-center px-4 py-12 text-center">
+          <span className="flex h-16 w-16 items-center justify-center rounded-full bg-header text-white dark:bg-black/60" aria-hidden>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" className="h-7 w-7">
+              <rect x="5" y="4.5" width="14" height="16.5" rx="2" />
+              <path d="M9 3h6v3H9z" />
+              <path d="M9 11h.01M12 11h4M9 15h.01M12 15h4" />
+            </svg>
+          </span>
+          <h3 className="mt-5 text-lg font-bold">Track your daily work</h3>
+          <p className="mt-2 max-w-md text-[15px] text-muted">
+            Click “Add Summary” to select a project, choose the work date, and record your progress.
+          </p>
         </div>
-        <select value={project} onChange={(e) => setProject(e.target.value)} aria-label="Project" className={`${control} w-48`}>
-          <option value="all">All projects</option>
-          {projects.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name}
-            </option>
-          ))}
-        </select>
-        <select value={review} onChange={(e) => setReview(e.target.value as ReviewFilter)} aria-label="Review status" className={`${control} w-40`}>
-          <option value="all">All statuses</option>
-          {(Object.keys(REVIEW_LABEL) as ReviewStatus[]).map((s) => (
-            <option key={s} value={s}>
-              {REVIEW_LABEL[s]}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      {rows.length ? (
-        <ul className="mt-3 max-h-[24rem] divide-y divide-line overflow-y-auto rounded-lg border border-line">
-          {rows.map((u) => {
-            const active = u.id === selected;
-            const isToday = u.date === today;
-            return (
-              <li key={u.id}>
-                <button
-                  onClick={() => open(u)}
-                  aria-current={active ? "true" : undefined}
-                  className={`grid w-full grid-cols-1 items-center gap-x-4 gap-y-1 px-4 py-2.5 text-left transition-colors sm:grid-cols-[9.5rem_minmax(0,1fr)_auto] lg:grid-cols-[9.5rem_minmax(0,1fr)_7rem_4rem_8rem] ${
-                    active ? "bg-st-blue/8 shadow-[inset_3px_0_0_var(--blue)]" : isToday ? "bg-accent/6 hover:bg-track/50" : "hover:bg-track/50"
-                  }`}
-                >
-                  <span className="flex items-center gap-2 whitespace-nowrap text-sm">
-                    <span className="font-semibold">{dayLabel(u.date)}</span>
-                    {isToday && (
-                      <span className="rounded bg-header px-1.5 text-[11px] font-semibold uppercase text-white dark:bg-accent dark:text-header">
-                        Today
-                      </span>
-                    )}
-                  </span>
-                  <span className="min-w-0">
-                    <span className="block text-[15px] font-semibold">{projectById(u.projectId).name}</span>
-                    <span className="block truncate text-[13px] text-muted">{preview(u)}</span>
-                  </span>
-                  <span className="hidden lg:block">
-                    <StatusDot status={u.status} />
-                  </span>
-                  <span className="hidden text-sm text-muted lg:block">{time(u.sharedAt)}</span>
-                  <span className="flex items-center gap-2 sm:justify-end">
-                    {u.feedback.length > 0 && (
-                      <span className="text-xs text-muted" title="Feedback entries">
-                        💬 {u.feedback.length}
-                      </span>
-                    )}
-                    <ReviewBadge status={u.reviewStatus} />
-                  </span>
-                </button>
-              </li>
-            );
-          })}
-        </ul>
       ) : (
-        <p className="mt-3 rounded-lg border border-dashed border-line py-8 text-center text-sm text-muted">
-          {filtering && hasMore && !feed.moreError
-            ? "Searching all updates..."
-            : updates.length
-            ? "No updates match these filters. A missing update does not mean no work was done; it may not have been shared yet."
-            : "No daily updates have been shared yet."}
-        </p>
+        <>
+          <div className="mt-4 flex flex-wrap items-center gap-2.5">
+            <input
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search updates"
+              aria-label="Search updates"
+              className={`${control} min-w-[12rem] flex-1`}
+            />
+            <div className="flex items-center gap-1">
+              <button onClick={() => stepDate(-1)} aria-label="Previous update date" className="h-10 rounded-lg border border-line px-2.5 hover:bg-track">
+                ‹
+              </button>
+              <input
+                type="date"
+                value={date}
+                max={today}
+                onChange={(e) => setDate(e.target.value)}
+                aria-label="Filter by date"
+                className={`${control} w-40`}
+              />
+              <button onClick={() => stepDate(1)} aria-label="Next update date" className="h-10 rounded-lg border border-line px-2.5 hover:bg-track">
+                ›
+              </button>
+              {date && (
+                <button onClick={() => setDate("")} className="px-2 text-sm font-medium text-st-blue hover:underline">
+                  All dates
+                </button>
+              )}
+            </div>
+            <select value={project} onChange={(e) => setProject(e.target.value)} aria-label="Project" className={`${control} w-48`}>
+              <option value="all">All projects</option>
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+            <select value={review} onChange={(e) => setReview(e.target.value as ReviewFilter)} aria-label="Review status" className={`${control} w-40`}>
+              <option value="all">All statuses</option>
+              {(Object.keys(REVIEW_LABEL) as ReviewStatus[]).map((s) => (
+                <option key={s} value={s}>
+                  {REVIEW_LABEL[s]}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {rows.length ? (
+            <ul className="mt-3 max-h-[24rem] divide-y divide-line overflow-y-auto rounded-lg border border-line">
+              {rows.map((u) => {
+                const active = u.id === selected;
+                const isToday = u.date === today;
+                return (
+                  <li key={u.id}>
+                    <button
+                      onClick={() => open(u)}
+                      aria-current={active ? "true" : undefined}
+                      className={`grid w-full grid-cols-1 items-center gap-x-4 gap-y-1 px-4 py-2.5 text-left transition-colors sm:grid-cols-[9.5rem_minmax(0,1fr)_auto] lg:grid-cols-[9.5rem_minmax(0,1fr)_7rem_4rem_8rem] ${
+                        active ? "bg-st-blue/8 shadow-[inset_3px_0_0_var(--blue)]" : isToday ? "bg-accent/6 hover:bg-track/50" : "hover:bg-track/50"
+                      }`}
+                    >
+                      <span className="flex items-center gap-2 whitespace-nowrap text-sm">
+                        <span className="font-semibold">{dayLabel(u.date)}</span>
+                        {isToday && (
+                          <span className="rounded bg-header px-1.5 text-[11px] font-semibold uppercase text-white dark:bg-accent dark:text-header">
+                            Today
+                          </span>
+                        )}
+                      </span>
+                      <span className="min-w-0">
+                        <span className="block text-[15px] font-semibold">{projectById(u.projectId).name}</span>
+                        <span className="block truncate text-[13px] text-muted">{preview(u)}</span>
+                      </span>
+                      <span className="hidden lg:block">
+                        <StatusDot status={u.status} />
+                      </span>
+                      <span className="hidden text-sm text-muted lg:block">{time(u.sharedAt)}</span>
+                      <span className="flex items-center gap-2 sm:justify-end">
+                        {u.feedback.length > 0 && (
+                          <span className="text-xs text-muted" title="Feedback entries">
+                            💬 {u.feedback.length}
+                          </span>
+                        )}
+                        <ReviewBadge status={u.reviewStatus} />
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          ) : (
+            <p className="mt-3 rounded-lg border border-dashed border-line py-8 text-center text-sm text-muted">
+              {filtering && hasMore && !feed.moreError
+                ? "Searching all updates..."
+                : updates.length
+                ? "No updates match these filters. A missing update does not mean no work was done; it may not have been shared yet."
+                : "No daily updates have been shared yet."}
+            </p>
+          )}
+
+          <LoadMoreFooter
+            noun="updates"
+            loaded={updates.length}
+            total={feed.count}
+            loading={feed.moreLoading}
+            error={feed.moreError}
+            onMore={() => void loadMoreDailyUpdates()}
+            filtering={filtering}
+          />
+        </>
       )}
 
-      <LoadMoreFooter
-        noun="updates"
-        loaded={updates.length}
-        total={feed.count}
-        loading={feed.moreLoading}
-        error={feed.moreError}
-        onMore={() => void loadMoreDailyUpdates()}
-        filtering={filtering}
-      />
+      {adding && <WorkUpdateForm onClose={() => setAdding(false)} onShared={() => setAdding(false)} />}
 
       {current && (
         <UpdatePanel

@@ -68,6 +68,9 @@ def _env_positive_int(name: str, default: int) -> int:
     return int(raw)
 
 
+# Fernet key for credentials stored on projects (common/secrets.py); empty = derived from SECRET_KEY.
+FIELD_ENCRYPTION_KEY = os.environ.get("DJANGO_FIELD_ENCRYPTION_KEY", "").strip()
+
 JWT_ACCESS_MINUTES = _env_positive_int("DJANGO_JWT_ACCESS_MINUTES", 15)
 JWT_REFRESH_HOURS = _env_positive_int("DJANGO_JWT_REFRESH_HOURS", 24)
 # A separate key lets tokens be revoked all at once (by changing it) without touching DJANGO_SECRET_KEY.

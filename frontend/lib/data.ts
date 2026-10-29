@@ -37,6 +37,7 @@ export interface Project {
   progressSet: number; // the progress set on the project itself (0 = not set)
   tasksStarted: number; // tasks in progress, blocked or done: any of these means the project has started
   decision?: string; // what leadership needs to decide, if anything
+  accessUrl: string; // website link, "" = none (the saved login is fetched only by the edit form)
   objectives: string[];
   members: ProjectMember[];
   history: Activity[];

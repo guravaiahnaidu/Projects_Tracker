@@ -9,6 +9,7 @@ from rest_framework.views import APIView
 from activity.models import ActivityLog
 from activity.services import log
 from activity.views import activity_page
+from common import secrets
 from common.exceptions import Conflict
 from common.limits import LIST_DEFAULT_LIMIT as DEFAULT_LIMIT, LIST_MAX_LIMIT as MAX_LIMIT
 from common.params import OFFSET_MAX, parse_id, parse_int
@@ -132,6 +133,10 @@ class ProjectDetailView(APIView):
             events.append(("project.priority", f"You changed the priority of {name} from {project.priority} to {data['priority']}"))
         if "description" in data and data["description"] != project.description:
             events.append(("project.updated", f"You updated the description of {name}"))
+        if "access_url" in data:
+            events.append(("project.updated", f"You {'changed' if data['access_url'] else 'removed'} the project URL of {name}"))
+        if "access_username_enc" in data or "access_password_enc" in data:
+            events.append(("project.updated", f"You updated the login details of {name}"))
         if "phase" in data and data["phase"] != project.phase:
             events.append(("project.phase", f"You changed {name} from {project.phase} to {data['phase']}"))
         new_lead_id = data["lead"].pk if data.get("lead") else None
@@ -184,6 +189,21 @@ class ProjectDetailView(APIView):
         project.delete()  # memberships and objectives cascade; its history is purged (activity.signals)
         log("project.deleted", "project", project_id, f"You deleted the project {name}")
         return Response(status=204)
+
+
+class ProjectAccessView(APIView):
+    """The saved project login, decrypted. Kept off the project payload so it is only sent when the edit form asks."""
+
+    def get(self, request, pk):
+        project = get_project(pk, detail=False)
+        response = Response(
+            {
+                "username": secrets.decrypt(project.access_username_enc),
+                "password": secrets.decrypt(project.access_password_enc),
+            }
+        )
+        response["Cache-Control"] = "no-store"
+        return response
 
 
 class ProjectHistoryView(APIView):

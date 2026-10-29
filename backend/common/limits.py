@@ -7,6 +7,8 @@ request, an activity-log line and the weekly brief a sensible size.
 
 PROJECT_DESCRIPTION_MAX = 5000  # a few paragraphs
 PROJECT_DECISION_MAX = 1000  # one decision statement; it is also copied into activity text
+PROJECT_ACCESS_URL_MAX = 500
+PROJECT_ACCESS_CREDENTIAL_MAX = 200  # username / password
 TASK_NOTE_MAX = 2000  # "what is it waiting on"
 DAILY_UPDATE_ITEM_MAX = 500  # one line of a daily update (completed / in progress / next step / blocker)
 DAILY_UPDATE_ITEMS_MAX = 50  # lines per section

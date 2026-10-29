@@ -163,12 +163,17 @@ function DecisionPanel({ rec, onClose, onOpen }: { rec: DecisionRecord; onClose:
   const closeRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     closeRef.current?.focus({ preventScroll: true });
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    // Capture phase runs before the history drawer's own Escape listener, so only this panel closes.
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.stopImmediatePropagation();
+      onClose();
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
   }, [onClose]);
 
-  const row = (label: string, value: ReactNode) => (
+  const row =(label: string, value: ReactNode) => (
     <div className="grid grid-cols-[8.5rem_minmax(0,1fr)] gap-3 py-2">
       <dt className="text-sm text-muted">{label}</dt>
       <dd className="text-[15px]">{value}</dd>
@@ -234,9 +239,25 @@ function DecisionPanel({ rec, onClose, onOpen }: { rec: DecisionRecord; onClose:
   );
 }
 
-/* ---------- History section ---------- */
+/* ---------- History drawer ---------- */
 
-export default function DecisionHistory({ onOpen, initialSelected }: { onOpen: (ref: OpenRef) => void; initialSelected?: string }) {
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/**
+ * Decision history in a panel that slides in from the right. It stays mounted while closed so it can slide out;
+ * `inert` keeps it out of the tab order and away from screen readers until it opens.
+ */
+export default function DecisionHistory({
+  open,
+  onClose,
+  onOpen,
+  initialSelected,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onOpen: (ref: OpenRef) => void;
+  initialSelected?: string;
+}) {
   const history = useDecisionHistory(); // newest decision first, as served; loaded a page at a time
   const feed = useStore().decisionsFeed;
   const now = useNow();
@@ -247,13 +268,48 @@ export default function DecisionHistory({ onOpen, initialSelected }: { onOpen: (
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [selected, setSelected] = useState<string | null>(initialSelected ?? null);
-  const sectionRef = useRef<HTMLElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
 
-  // Opened from the navbar search: bring the history into view (the panel opens on its own).
-  useEffect(() => {
-    if (initialSelected) sectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-  }, [initialSelected]);
   const closePanel = useCallback(() => setSelected(null), []);
+  const close = useCallback(() => {
+    setSelected(null);
+    onClose();
+  }, [onClose]);
+  // Opening the project from a record leaves the history.
+  const openFromPanel = (ref: OpenRef) => {
+    close();
+    onOpen(ref);
+  };
+
+  // While open: Escape closes, Tab stays inside, the page behind does not scroll, and focus goes back afterwards.
+  useEffect(() => {
+    if (!open) return;
+    const returnTo = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    closeRef.current?.focus({ preventScroll: true });
+    const overflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") return close();
+      const root = rootRef.current;
+      if (e.key !== "Tab" || !root) return;
+      const items = Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE));
+      if (!items.length) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      const active = document.activeElement;
+      if (!root.contains(active) || (e.shiftKey ? active === first : active === last)) {
+        e.preventDefault();
+        (e.shiftKey ? last : first).focus();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = overflow;
+      returnTo?.focus({ preventScroll: true });
+    };
+  }, [open, close]);
 
   const filtering = Boolean(query.trim() || outcome !== "all" || project !== "all" || lead !== "all" || from || to);
   const hasMore = history.length < feed.count;
@@ -284,118 +340,142 @@ export default function DecisionHistory({ onOpen, initialSelected }: { onOpen: (
     setFrom("");
     setTo("");
   };
-  const current = history.find((r) => r.id === selected);
+  const current = open ? history.find((r) => r.id === selected) : undefined;
   const select = control.replace("h-10", "h-9");
 
   return (
-    <section ref={sectionRef} className="scroll-mt-4 rounded-xl border border-line bg-surface p-5 shadow-sm" aria-label="Decision history">
-      <header className="flex flex-wrap items-baseline justify-between gap-2">
-        <h2 className="flex items-center gap-2 text-base font-bold">
-          Decision history
-          <span className="rounded-full bg-track px-2 py-0.5 text-xs font-semibold text-muted">{feed.count} recorded</span>
-        </h2>
-        <p className="text-sm text-muted">Decisions you have made, newest first.</p>
-      </header>
-
-      {history.length === 0 ? (
-        <p className="mt-3 rounded-lg border border-dashed border-line py-6 text-center text-sm text-muted">
-          No decisions recorded yet. Completed decisions will appear here.
-        </p>
-      ) : (
-        <>
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            <input
-              type="search"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search decisions, projects or notes"
-              aria-label="Search decisions"
-              className={`${select} min-w-[12rem] flex-1 text-sm!`}
-            />
-            <select value={outcome} onChange={(e) => setOutcome(e.target.value as "all" | Outcome)} aria-label="Outcome" className={`${select} w-36 text-sm!`}>
-              <option value="all">All outcomes</option>
-              {OUTCOMES.map((o) => (
-                <option key={o}>{o}</option>
-              ))}
-            </select>
-            <select value={project} onChange={(e) => setProject(e.target.value)} aria-label="Project" className={`${select} w-44 text-sm!`}>
-              <option value="all">All projects</option>
-              {projectsInHistory.map(([id, name]) => (
-                <option key={id} value={id}>
-                  {name}
-                </option>
-              ))}
-            </select>
-            <select value={lead} onChange={(e) => setLead(e.target.value)} aria-label="Project lead" className={`${select} w-40 text-sm!`}>
-              <option value="all">All leads</option>
-              {leads.map((l) => (
-                <option key={l}>{l}</option>
-              ))}
-            </select>
-            <span className="flex items-center gap-1.5 text-sm text-muted">
-              <input type="date" value={from} max={to || undefined} onChange={(e) => setFrom(e.target.value)} aria-label="Decided from" className={`${select} w-36 text-sm!`} />
-              to
-              <input type="date" value={to} min={from || undefined} onChange={(e) => setTo(e.target.value)} aria-label="Decided to" className={`${select} w-36 text-sm!`} />
-            </span>
-            {filtering && (
-              <button onClick={reset} className="px-1.5 text-sm font-semibold text-st-blue hover:underline">
-                Reset filters
-              </button>
-            )}
-          </div>
-
-          {rows.length ? (
-            <ul className="mt-3 max-h-[20rem] divide-y divide-line overflow-y-auto rounded-lg border border-line">
-              {rows.map((r) => (
-                <li key={r.id}>
-                  <button
-                    onClick={() => setSelected(r.id)}
-                    aria-current={r.id === selected ? "true" : undefined}
-                    className={`grid w-full grid-cols-1 items-center gap-x-4 gap-y-1 px-4 py-2.5 text-left sm:grid-cols-[6.5rem_minmax(0,1fr)_auto] lg:grid-cols-[6.5rem_minmax(0,1fr)_9rem_7.5rem] ${
-                      r.id === selected ? "bg-st-blue/8 shadow-[inset_3px_0_0_var(--blue)]" : "hover:bg-track/50"
-                    }`}
-                  >
-                    <span className="whitespace-nowrap text-sm font-semibold">{fmtDay(r.decisionDate)}</span>
-                    <span className="min-w-0">
-                      <span className="block truncate text-[15px] font-semibold">{r.title}</span>
-                      <span className="block truncate text-[13px] text-muted">
-                        {r.projectName}
-                        {r.notes ? ` · ${r.notes}` : ""}
-                      </span>
-                    </span>
-                    <span className="hidden truncate text-sm text-muted lg:block">{r.lead ? `Lead ${r.lead}` : "No lead"}</span>
-                    <span className="sm:justify-self-end">
-                      <OutcomeBadge outcome={r.outcome} />
-                    </span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="mt-3 rounded-lg border border-dashed border-line py-6 text-center text-sm text-muted">
-              No decisions match these filters.{" "}
-              <button onClick={reset} className="font-semibold text-st-blue hover:underline">
-                Reset filters
-              </button>
+    <div ref={rootRef} inert={!open} className={`fixed inset-0 z-50 ${open ? "" : "pointer-events-none"}`}>
+      <div
+        aria-hidden
+        onClick={close}
+        className={`absolute inset-0 bg-black/50 transition-opacity duration-300 ${open ? "opacity-100 starting:opacity-0" : "opacity-0"}`}
+      />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="decision-history-title"
+        aria-describedby="decision-history-subtitle"
+        className={`absolute inset-y-0 right-0 flex w-[440px] max-w-[90vw] flex-col border-l border-line bg-surface shadow-[-12px_0_32px_-12px_rgb(15_31_61/0.25)] transition-transform duration-300 ease-out motion-reduce:transition-none ${
+          open ? "translate-x-0 starting:translate-x-full" : "translate-x-full"
+        }`}
+      >
+        <header className="flex items-start justify-between gap-3 border-b border-line px-5 py-4">
+          <div className="min-w-0">
+            <h2 id="decision-history-title" className="flex flex-wrap items-center gap-2 text-lg font-bold">
+              Decision History
+              <span className="rounded-full bg-track px-2 py-0.5 text-xs font-semibold text-muted">{feed.count} recorded</span>
+            </h2>
+            <p id="decision-history-subtitle" className="mt-0.5 text-sm text-muted">
+              Decisions you have made, newest first.
             </p>
+          </div>
+          <button
+            ref={closeRef}
+            type="button"
+            onClick={close}
+            aria-label="Close decision history"
+            className="rounded-md px-2 text-2xl leading-none text-muted hover:bg-track hover:text-ink"
+          >
+            ×
+          </button>
+        </header>
+
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-4">
+          {history.length === 0 ? (
+            <p className="rounded-lg border border-dashed border-line px-4 py-8 text-center text-sm text-muted">
+              No decisions recorded yet. Completed decisions will appear here.
+            </p>
+          ) : (
+            <>
+              <div className="space-y-2">
+                <input
+                  type="search"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="Search decisions, projects or notes"
+                  aria-label="Search decisions"
+                  className={`${select} w-full text-sm!`}
+                />
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                  <select value={outcome} onChange={(e) => setOutcome(e.target.value as "all" | Outcome)} aria-label="Outcome" className={`${select} w-full text-sm!`}>
+                    <option value="all">All outcomes</option>
+                    {OUTCOMES.map((o) => (
+                      <option key={o}>{o}</option>
+                    ))}
+                  </select>
+                  <select value={project} onChange={(e) => setProject(e.target.value)} aria-label="Project" className={`${select} w-full text-sm!`}>
+                    <option value="all">All projects</option>
+                    {projectsInHistory.map(([id, name]) => (
+                      <option key={id} value={id}>
+                        {name}
+                      </option>
+                    ))}
+                  </select>
+                  <select value={lead} onChange={(e) => setLead(e.target.value)} aria-label="Project lead" className={`${select} col-span-2 w-full text-sm! sm:col-span-1`}>
+                    <option value="all">All leads</option>
+                    {leads.map((l) => (
+                      <option key={l}>{l}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="flex items-center gap-1.5 text-sm text-muted">
+                  <input type="date" value={from} max={to || undefined} onChange={(e) => setFrom(e.target.value)} aria-label="Decided from" className={`${select} min-w-0 flex-1 text-sm!`} />
+                  to
+                  <input type="date" value={to} min={from || undefined} onChange={(e) => setTo(e.target.value)} aria-label="Decided to" className={`${select} min-w-0 flex-1 text-sm!`} />
+                </div>
+                {filtering && (
+                  <button onClick={reset} className="text-sm font-semibold text-st-blue hover:underline">
+                    Reset filters
+                  </button>
+                )}
+              </div>
+
+              {rows.length ? (
+                <ul className="mt-3 divide-y divide-line rounded-lg border border-line">
+                  {rows.map((r) => (
+                    <li key={r.id}>
+                      <button
+                        onClick={() => setSelected(r.id)}
+                        aria-current={r.id === selected ? "true" : undefined}
+                        className={`block w-full px-4 py-3 text-left ${r.id === selected ? "bg-st-blue/8 shadow-[inset_3px_0_0_var(--blue)]" : "hover:bg-track/50"}`}
+                      >
+                        <span className="flex items-center justify-between gap-3">
+                          <span className="whitespace-nowrap text-sm font-semibold">{fmtDay(r.decisionDate)}</span>
+                          <OutcomeBadge outcome={r.outcome} />
+                        </span>
+                        <span className="mt-1 line-clamp-2 block text-[15px] font-semibold leading-snug">{r.title}</span>
+                        <span className="mt-0.5 block truncate text-[13px] text-muted">
+                          {r.projectName} · {r.lead ? `Lead ${r.lead}` : "No lead"}
+                          {r.notes ? ` · ${r.notes}` : ""}
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="mt-3 rounded-lg border border-dashed border-line py-6 text-center text-sm text-muted">
+                  No decisions match these filters.{" "}
+                  <button onClick={reset} className="font-semibold text-st-blue hover:underline">
+                    Reset filters
+                  </button>
+                </p>
+              )}
+
+              <LoadMoreFooter
+                noun="decisions"
+                loaded={history.length}
+                total={feed.count}
+                loading={feed.moreLoading}
+                error={feed.moreError}
+                onMore={() => void loadMoreDecisionRecords()}
+                filtering={filtering}
+              />
+            </>
           )}
-        </>
-      )}
+        </div>
+      </div>
 
-      {history.length > 0 && (
-        <LoadMoreFooter
-          noun="decisions"
-          loaded={history.length}
-          total={feed.count}
-          loading={feed.moreLoading}
-          error={feed.moreError}
-          onMore={() => void loadMoreDecisionRecords()}
-          filtering={filtering}
-        />
-      )}
-
-      {current && <DecisionPanel key={current.id} rec={current} onClose={closePanel} onOpen={onOpen} />}
-    </section>
+      {current && <DecisionPanel key={current.id} rec={current} onClose={closePanel} onOpen={openFromPanel} />}
+    </div>
   );
 }
-

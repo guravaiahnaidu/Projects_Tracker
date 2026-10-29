@@ -285,7 +285,17 @@ interface Decided {
   record: DecisionRecord;
 }
 
-function DecisionsCard({ now, onOpen }: { now: Date | null; onOpen: (ref: OpenRef) => void }) {
+function DecisionsCard({
+  now,
+  onOpen,
+  onShowHistory,
+  historyOpen,
+}: {
+  now: Date | null;
+  onOpen: (ref: OpenRef) => void;
+  onShowHistory: () => void;
+  historyOpen: boolean;
+}) {
   const [deciding, setDeciding] = useState<DecisionItem | null>(null);
   const [decided, setDecided] = useState<Decided | null>(null);
   const [busy, setBusy] = useState(false);
@@ -323,6 +333,23 @@ function DecisionsCard({ now, onOpen }: { now: Date | null; onOpen: (ref: OpenRe
       <header className="flex flex-wrap items-center gap-3">
         <h2 className="text-lg font-bold">Waiting on your decision</h2>
         <span className="rounded-full bg-accent/25 px-2.5 py-0.5 text-sm font-semibold">{pending.length} pending</span>
+        <button
+          type="button"
+          onClick={onShowHistory}
+          aria-haspopup="dialog"
+          aria-expanded={historyOpen}
+          className="ml-auto inline-flex items-center gap-2 rounded-lg border border-line bg-surface px-3.5 py-1.5 text-sm font-medium shadow-sm hover:bg-track"
+        >
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 text-muted" aria-hidden>
+            <path d="M3.5 10a6.5 6.5 0 1 0 1.9-4.6" />
+            <path d="M3.5 3.5v3h3" />
+            <path d="M10 6.5V10l2.5 1.5" />
+          </svg>
+          Decision History
+          <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4 text-muted" aria-hidden>
+            <path d="M7.4 5.2a.75.75 0 0 1 1.06.06l4.2 4.25a.75.75 0 0 1 0 1.05l-4.2 4.25a.75.75 0 1 1-1.07-1.05L11.06 10 7.4 6.26a.75.75 0 0 1 0-1.06Z" />
+          </svg>
+        </button>
       </header>
 
       {pending.length === 0 && <p className="mt-3 text-muted">You are all caught up. No decisions are waiting on you.</p>}
@@ -372,7 +399,11 @@ function DecisionsCard({ now, onOpen }: { now: Date | null; onOpen: (ref: OpenRe
         <p role="status" className="mt-2 flex flex-wrap items-center gap-x-2 border-t border-accent/30 pt-3 text-sm text-muted">
           <span className="font-semibold text-st-green">✓</span>
           Decision on <b className="text-ink">{decided.name}</b> recorded as <OutcomeBadge outcome={decided.record.outcome} /> and moved
-          to Decision history.
+          to{" "}
+          <button type="button" onClick={onShowHistory} className="font-semibold text-st-blue hover:underline">
+            Decision history
+          </button>
+          .
           <button
             onClick={() => void undo()}
             disabled={busy}
@@ -412,6 +443,15 @@ export default function Overview({
   const now = useNow();
   const s = summary();
   const items = attentionItems();
+  // Decision history lives in a drawer; a decision picked in the navbar search opens it on that record.
+  const [historyOpen, setHistoryOpen] = useState(!!focus?.decision);
+  const [seenFocus, setSeenFocus] = useState(focus);
+  if (focus !== seenFocus) {
+    setSeenFocus(focus);
+    if (focus?.decision) setHistoryOpen(true);
+  }
+  const showHistory = useCallback(() => setHistoryOpen(true), []);
+  const hideHistory = useCallback(() => setHistoryOpen(false), []);
 
   return (
     <div className="space-y-6">
@@ -473,9 +513,15 @@ export default function Overview({
         />
       </div>
 
-      <DecisionsCard now={now} onOpen={onOpen} />
+      <DecisionsCard now={now} onOpen={onOpen} onShowHistory={showHistory} historyOpen={historyOpen} />
 
-      <DecisionHistory key={focus?.decision ? `h${focus.nonce}` : "history"} onOpen={onOpen} initialSelected={focus?.decision} />
+      <DecisionHistory
+        key={focus?.decision ? `h${focus.nonce}` : "history"}
+        open={historyOpen}
+        onClose={hideHistory}
+        onOpen={onOpen}
+        initialSelected={focus?.decision}
+      />
 
       <DailyUpdates key={focus?.update ? `u${focus.nonce}` : "updates"} initialSelected={focus?.update} />
 

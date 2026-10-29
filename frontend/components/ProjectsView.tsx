@@ -295,7 +295,7 @@ function Timeline({ list, now, onSelect }: { list: Project[]; now: Date | null; 
 const NEW_PROJECT_STATUSES: ProjectPhase[] = ["Planning", "Not Started", "In Progress", "Under Testing", "On Hold", "No Updates", "Completed", "Cancelled"];
 const DESCRIPTION_MAX = 5000; // matches the backend's PROJECT_DESCRIPTION_MAX
 
-type NewProjectField = "name" | "client" | "department" | "lead" | "start" | "end" | "description";
+type NewProjectField = "name" | "client" | "department" | "lead" | "start" | "end" | "description" | "accessUrl" | "accessUsername" | "accessPassword";
 // Server field names -> form fields, so API validation messages land next to the right input.
 const SERVER_FIELDS: Record<string, NewProjectField> = {
   name: "name",
@@ -305,7 +305,45 @@ const SERVER_FIELDS: Record<string, NewProjectField> = {
   start_date: "start",
   end_date: "end",
   description: "description",
+  access_url: "accessUrl",
+  access_username: "accessUsername",
+  access_password: "accessPassword",
 };
+
+const ACCESS_CREDENTIAL_MAX = 200; // matches the backend's PROJECT_ACCESS_CREDENTIAL_MAX
+
+/** Empty is fine (optional); otherwise an http(s) address. */
+function urlProblem(raw: string): string {
+  const value = raw.trim();
+  if (!value) return "";
+  try {
+    const u = new URL(value);
+    if ((u.protocol === "http:" || u.protocol === "https:") && u.hostname.includes(".")) return "";
+  } catch {}
+  return "Enter a valid URL starting with http:// or https://, e.g. https://domain.com.";
+}
+
+/** Text input that shows dots until the eye button is clicked. Used for the project login. */
+function RevealInput({ id, show, onToggle, label, invalid, ...input }: { id: string; show: boolean; onToggle: () => void; label: string; invalid: boolean } & React.InputHTMLAttributes<HTMLInputElement>) {
+  return (
+    <div className="relative">
+      <input id={id} type={show ? "text" : "password"} autoComplete="off" spellCheck={false} aria-invalid={invalid} {...input} className={`${control} w-full pr-11 placeholder:text-muted ${invalid ? "border-st-red! focus:ring-st-red/20!" : ""}`} />
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-label={`${show ? "Hide" : "Show"} ${label}`}
+        aria-pressed={show}
+        className="absolute inset-y-0 right-0 flex w-10 items-center justify-center rounded-r-lg text-muted hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-st-blue/40"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5" aria-hidden>
+          <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z" />
+          <circle cx="12" cy="12" r="3" />
+          {show && <path d="M4 4l16 16" />}
+        </svg>
+      </button>
+    </div>
+  );
+}
 
 const leadIdOf = (p: Project) => {
   const id = team.find((m) => m.name === p.lead)?.id;
@@ -336,6 +374,14 @@ function ProjectDialog({
   const [status, setStatus] = useState<ProjectPhase>(project?.phase ?? "Planning");
   const [priority, setPriority] = useState<ProjectPriority>(project?.priority ?? "Medium");
   const [description, setDescription] = useState(project?.description ?? "");
+  const [accessUrl, setAccessUrl] = useState(project?.accessUrl ?? "");
+  const [accessUsername, setAccessUsername] = useState("");
+  const [accessPassword, setAccessPassword] = useState("");
+  const [showUsername, setShowUsername] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  // The saved login is not part of the project list; when editing it is fetched once, and the fields stay locked until it arrives.
+  const [savedLogin, setSavedLogin] = useState<{ username: string; password: string } | null>(null);
+  const [loginState, setLoginState] = useState<"loading" | "ready" | "error">(editing ? "loading" : "ready");
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleteError, setDeleteError] = useState("");
   const [deleting, setDeleting] = useState(false);
@@ -344,6 +390,24 @@ function ProjectDialog({
   const [saving, setSaving] = useState(false);
   const [serverError, setServerError] = useState("");
   const [serverFields, setServerFields] = useState<Partial<Record<NewProjectField, string>>>({});
+
+  useEffect(() => {
+    if (!project) return;
+    let live = true;
+    api
+      .getProjectAccess(numericId(project.id))
+      .then((login) => {
+        if (!live) return;
+        setSavedLogin(login);
+        setAccessUsername(login.username);
+        setAccessPassword(login.password);
+        setLoginState("ready");
+      })
+      .catch(() => live && setLoginState("error"));
+    return () => {
+      live = false;
+    };
+  }, [project]);
 
   const clean = (s: string) => s.trim().replace(/\s+/g, " ");
   const departmentOptions = departments.map((d) => ({ value: d, label: d }));
@@ -368,8 +432,11 @@ function ProjectDialog({
           ? "The deadline must be after the start date."
           : "",
     description: description.length > DESCRIPTION_MAX ? `Keep the description under ${DESCRIPTION_MAX} characters.` : "",
+    accessUrl: urlProblem(accessUrl),
+    accessUsername: accessUsername.length > ACCESS_CREDENTIAL_MAX ? `Keep the username under ${ACCESS_CREDENTIAL_MAX} characters.` : "",
+    accessPassword: accessPassword.length > ACCESS_CREDENTIAL_MAX ? `Keep the password under ${ACCESS_CREDENTIAL_MAX} characters.` : "",
   };
-  const order: NewProjectField[] = ["name", "client", "department", "lead", "start", "end", "description"];
+  const order: NewProjectField[] = ["name", "client", "department", "lead", "start", "end", "accessUrl", "accessUsername", "accessPassword", "description"];
   const firstProblem = order.find((f) => problems[f]);
   const errorFor = (f: NewProjectField) => serverFields[f] || ((attempted || touched[f]) && problems[f]) || "";
   const touch = (f: NewProjectField) => setTouched((t) => ({ ...t, [f]: true }));
@@ -385,6 +452,9 @@ function ProjectDialog({
     phase: status,
     priority,
     description: description.trim(),
+    access_url: accessUrl.trim(),
+    access_username: accessUsername,
+    access_password: accessPassword,
   };
   const stored: Partial<typeof values> = project
     ? {
@@ -397,10 +467,14 @@ function ProjectDialog({
         phase: project.phase,
         priority: project.priority,
         description: project.description,
+        access_url: project.accessUrl,
+        // Until the saved login has loaded the fields are locked, so "unchanged" is the right comparison.
+        access_username: savedLogin?.username ?? accessUsername,
+        access_password: savedLogin?.password ?? accessPassword,
       }
     : {};
   const changed = (Object.keys(values) as (keyof typeof values)[]).filter((k) => values[k] !== stored[k]);
-  const dirty = editing ? changed.length > 0 || startTyped || endTyped : !!(name || client || department || lead || start || end || description);
+  const dirty = editing ? changed.length > 0 || startTyped || endTyped : !!(name || client || department || lead || start || end || description || accessUrl || accessUsername || accessPassword);
   const openTasks = project ? tasks.filter((t) => t.projectId === project.id && t.state !== "done").length : 0;
 
   const close = () => {
@@ -458,6 +532,9 @@ function ProjectDialog({
             phase: status,
             priority,
             description: description.trim(),
+            access_url: accessUrl.trim(),
+            access_username: accessUsername,
+            access_password: accessPassword,
           }),
         SCOPES.newProject,
       );
@@ -693,6 +770,94 @@ function ProjectDialog({
             </select>
           </div>
         </div>
+
+        <section>
+          <h3 id="np-access-title" className="text-[15px] font-semibold">
+            {/* Project access */}
+          </h3>
+          {/* <p className="mt-1 text-sm text-muted">Website link and login for this project. Login details stay hidden until you click the eye button.</p> */}
+
+          <div className="mt-4">
+            <label htmlFor="np-accessUrl" className={label}>
+              Project URL <span className="font-normal text-muted">(optional)</span>
+            </label>
+            <input
+              id="np-accessUrl"
+              type="url"
+              inputMode="url"
+              autoComplete="off"
+              maxLength={500}
+              value={accessUrl}
+              onChange={(e) => {
+                setAccessUrl(e.target.value);
+                edited("accessUrl");
+              }}
+              onBlur={() => touch("accessUrl")}
+              aria-invalid={!!errorFor("accessUrl")}
+              aria-describedby={errorFor("accessUrl") ? "np-accessUrl-error" : "np-accessUrl-hint"}
+              placeholder="https://domain.com"
+              className={`${control} w-full placeholder:text-muted ${invalidCls("accessUrl")}`}
+            />
+            {err("accessUrl")}
+            {!errorFor("accessUrl") && (
+              <p id="np-accessUrl-hint" className="mt-1.5 text-[13px] text-muted">
+                {/* Example: https://domain.com */}
+              </p>
+            )}
+          </div>
+
+          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            <div>
+              <label htmlFor="np-accessUsername" className={label}>
+                Username <span className="font-normal text-muted">(optional)</span>
+              </label>
+              <RevealInput
+                id="np-accessUsername"
+                label="username"
+                show={showUsername}
+                onToggle={() => setShowUsername((v) => !v)}
+                invalid={!!errorFor("accessUsername")}
+                value={accessUsername}
+                disabled={loginState !== "ready"}
+                onChange={(e) => {
+                  setAccessUsername(e.target.value);
+                  edited("accessUsername");
+                }}
+                onBlur={() => touch("accessUsername")}
+                aria-describedby={errorFor("accessUsername") ? "np-accessUsername-error" : undefined}
+                placeholder={loginState === "loading" ? "Loading..." : "Enter username"}
+              />
+              {err("accessUsername")}
+            </div>
+            <div>
+              <label htmlFor="np-accessPassword" className={label}>
+                Password <span className="font-normal text-muted">(optional)</span>
+              </label>
+              <RevealInput
+                id="np-accessPassword"
+                label="password"
+                show={showPassword}
+                onToggle={() => setShowPassword((v) => !v)}
+                invalid={!!errorFor("accessPassword")}
+                value={accessPassword}
+                disabled={loginState !== "ready"}
+                onChange={(e) => {
+                  setAccessPassword(e.target.value);
+                  edited("accessPassword");
+                }}
+                onBlur={() => touch("accessPassword")}
+                aria-describedby={errorFor("accessPassword") ? "np-accessPassword-error" : undefined}
+                placeholder={loginState === "loading" ? "Loading..." : "Enter password"}
+              />
+              {err("accessPassword")}
+            </div>
+          </div>
+          {loginState === "error" && (
+            <p role="alert" className="mt-3 text-[13px] text-st-amber-strong">
+              The saved login could not be loaded, so it is locked and will not be changed. Close and reopen this form to try again.
+            </p>
+          )}
+        </section>
 
         <div>
           <div className="flex items-baseline justify-between">

@@ -240,6 +240,8 @@ export interface ApiProject {
   effective_progress?: number; // progress, or task completion while progress is 0
   task_stats?: { total: number; done: number; started: number };
   decision: string;
+  access_url?: string;
+  has_access_login?: boolean;
   objectives?: { id: number; description: string }[];
   members?: { id: number; member_id: number; name: string; role: string }[];
 }
@@ -394,6 +396,13 @@ export interface FeedbackInput {
   content: string;
 }
 
+export interface DailyUpdateInput {
+  employee_id: number;
+  project_id: number;
+  date: string; // YYYY-MM-DD, not in the future
+  completed: string[];
+}
+
 
 export interface MemberInput {
   name: string;
@@ -418,6 +427,9 @@ export interface ProjectInput {
   phase?: ProjectPhase; // omitted: the server derives it from the start date
   priority?: ProjectPriority;
   description?: string;
+  access_url?: string;
+  access_username?: string;
+  access_password?: string;
 }
 
 export interface ProjectPatch {
@@ -432,6 +444,9 @@ export interface ProjectPatch {
   end_date?: string | null;
   progress?: number;
   decision?: string;
+  access_url?: string;
+  access_username?: string;
+  access_password?: string;
 }
 
 export interface TaskInput {
@@ -473,6 +488,8 @@ export const api = {
   /** Every project with objectives, members and open tasks in ONE request. */
   listProjects: () => get<Paged<ApiProject>>("/projects/", { detail: 1 }),
   getProject: (id: number) => get<ApiProject>(`/projects/${id}/`),
+  /** The saved project login (decrypted). Only the edit form asks for it. */
+  getProjectAccess: (id: number) => get<{ username: string; password: string }>(`/projects/${id}/access/`),
   projectHistory: (id: number, limit = 50, offset = 0) =>
     get<PagedWindow<ApiActivity>>(`/projects/${id}/history/`, { limit, offset }),
   createProject: (body: ProjectInput) => post<ApiProject>("/projects/", body),
@@ -502,7 +519,8 @@ export const api = {
   // Daily updates (the manager reviews them; employees' updates arrive through POST /daily-updates/)
   listDailyUpdates: (limit = 100, offset = 0) =>
     get<PagedWindow<ApiDailyUpdate> & { new_count: number }>("/daily-updates/", { limit, offset }),
-  markUpdateReviewed: (id: number) => patch<ApiDailyUpdate>(`/daily-updates/${id}/`, { review_status: "reviewed" }),
+  createDailyUpdate: (body: DailyUpdateInput) => post<ApiDailyUpdate>("/daily-updates/", body),
+  markUpdateReviewed:(id: number) => patch<ApiDailyUpdate>(`/daily-updates/${id}/`, { review_status: "reviewed" }),
   addFeedback: (id: number, body: FeedbackInput) => post<ApiDailyUpdate>(`/daily-updates/${id}/feedback/`, body),
 
   // Activity

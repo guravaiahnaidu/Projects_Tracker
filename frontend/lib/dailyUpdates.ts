@@ -6,7 +6,7 @@
 // (lib/data.ts) and refetches them after every change, so the database is the only source of truth.
 // Reviews and feedback are saved with PATCH /daily-updates/<id>/ and POST /daily-updates/<id>/feedback/.
 
-import { api } from "./api";
+import { api, type ApiDailyUpdate, type DailyUpdateInput } from "./api";
 import { dailyUpdates, type DailyUpdate, type FeedbackType, type ReviewStatus } from "./data";
 import { mutate, numericId, SCOPES, useStore } from "./store";
 
@@ -46,7 +46,13 @@ export async function markReviewed(update: DailyUpdate): Promise<void> {
   }
 }
 
+/** Shares a daily update for an employee (one per person, project and day). Throws the server's error on failure. */
+export async function shareUpdate(body: DailyUpdateInput): Promise<ApiDailyUpdate> {
+  return mutate(() => api.createDailyUpdate(body), SCOPES.shareUpdate);
+}
+
 /** Adds a feedback entry (earlier entries are kept). Throws the server's message on failure. */
-export async function addFeedback(update: DailyUpdate, type: FeedbackType, content: string): Promise<void> {
-  await mutate(() => api.addFeedback(numericId(update.id), { type, content }), SCOPES.feedback);
+export async function addFeedback(update: DailyUpdate | number, type: FeedbackType, content: string): Promise<void> {
+  const id = typeof update === "number" ? update : numericId(update.id);
+  await mutate(() => api.addFeedback(id, { type, content }), SCOPES.feedback);
 }

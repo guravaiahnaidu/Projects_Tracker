@@ -42,6 +42,10 @@ class Project(models.Model):
         default=0, validators=[MinValueValidator(0), MaxValueValidator(100)]
     )
     decision = models.TextField(blank=True, default="")
+    # Website and login for the project. Username and password are stored encrypted (common/secrets.py).
+    access_url = models.URLField(max_length=500, blank=True, default="")
+    access_username_enc = models.TextField(blank=True, default="")
+    access_password_enc = models.TextField(blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
