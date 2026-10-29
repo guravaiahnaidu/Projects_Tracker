@@ -42,7 +42,7 @@ class LoginTests(AuthTestCase):
         self.assertEqual(body["user"]["username"], "manager")
         self.assertEqual(body["user"]["role"], "manager")
         self.assertNotIn("refresh", body)  # the refresh token is never exposed to page scripts
-        self.assertEqual(AccessToken(body["access"])["user_id"], self.manager.id)
+        self.assertEqual(str(AccessToken(body["access"])["user_id"]), str(self.manager.id))  # a string claim since simplejwt 5.5
         cookie = r.cookies[COOKIE]
         self.assertTrue(cookie["httponly"])
         self.assertEqual(cookie["path"], "/api/auth/")
@@ -108,6 +108,7 @@ class AccessTokenTests(AuthTestCase):
                 "is_staff": True,
                 "is_superuser": False,
                 "groups": [],
+                "can_manage_project_access": False,
             },
         )
 
@@ -120,7 +121,9 @@ class AccessTokenTests(AuthTestCase):
         self.bearer(str(expired))
         r = self.get(f"{AUTH}/me/")
         self.assert_error(r, 401, "token_not_valid")
-        self.assertEqual(r.json()["error"]["message"], "Token is invalid or expired")
+        # The wording depends on the simplejwt version ("Token is invalid or expired" before 5.5, "Token is expired"
+        # since); the frontend relies on the 401 and the token_not_valid code only.
+        self.assertIn("expired", r.json()["error"]["message"])
 
     def test_token_of_a_deactivated_user_is_rejected(self):
         token = self.manager_token()
@@ -144,7 +147,7 @@ class RefreshAndLogoutTests(AuthTestCase):
         old = self.login().cookies[COOKIE].value
         r = self.refresh(FRONTEND)
         self.assertEqual(r.status_code, 200, r.content)
-        self.assertEqual(AccessToken(r.json()["access"])["user_id"], self.manager.id)
+        self.assertEqual(str(AccessToken(r.json()["access"])["user_id"]), str(self.manager.id))
         new = r.cookies[COOKIE].value
         self.assertNotEqual(new, old)
 

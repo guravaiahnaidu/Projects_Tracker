@@ -1,5 +1,10 @@
 from datetime import date, timedelta
 
+from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Group, Permission
+from django.test import override_settings
+from rest_framework_simplejwt.tokens import AccessToken
+
 from activity.models import ActivityLog
 from tests.support import ApiTestCase, day
 from projects import rules
@@ -498,31 +503,54 @@ class DecisionHistoryApiTests(ApiTestCase):
 
 
 class ProjectAccessApiTests(ApiTestCase):
-    """Project URL / username / password: optional, encrypted at rest, never in the project payload."""
+    """Project URL / username / password: optional, encrypted at rest, never in the project payload, and the login is
+    only readable or writable by managers explicitly given the permission."""
 
     LOGIN = {"access_url": "https://app.example.com", "access_username": "admin", "access_password": "s3cret!"}
 
+    def setUp(self):
+        User = get_user_model()
+        self.allowed = User.objects.create_user("allowed", password="x-Pass-12345", is_staff=True)
+        self.allowed.user_permissions.add(Permission.objects.get(codename="view_project_access"))
+        self.plain = User.objects.create_user("plain", password="x-Pass-12345", is_staff=True)  # a manager without it
+        self.sign_in(self.allowed)
+
+    def sign_in(self, user):
+        if user is None:
+            self.client.credentials()
+        else:
+            self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {AccessToken.for_user(user)}")
+
     def create(self, **extra):
         return self.post("/projects/", {"name": "Access", "start_date": day(-5).isoformat(), **extra})
+
+    def access(self, pid):
+        return self.get(f"/projects/{pid}/access/")
 
     def test_projects_without_access_details_work(self):
         res = self.create()
         self.assertEqual(res.status_code, 201)
         self.assertEqual((res.data["access_url"], res.data["has_access_login"]), ("", False))
-        self.assertEqual(self.get(f"/projects/{res.data['id']}/access/").data, {"username": "", "password": ""})
+        self.assertEqual(self.access(res.data["id"]).data, {"username": "", "password": ""})
 
     def test_create_stores_login_encrypted_and_hides_it_from_the_payload(self):
         res = self.create(**self.LOGIN)
         self.assertEqual(res.status_code, 201)
         self.assertEqual((res.data["access_url"], res.data["has_access_login"]), (self.LOGIN["access_url"], True))
-        self.assertNotIn("s3cret!", str(res.data))
         row = Project.objects.get(pk=res.data["id"])
         self.assertNotIn("s3cret!", row.access_password_enc)
         self.assertNotIn("admin", row.access_username_enc)
-        access = self.get(f"/projects/{row.pk}/access/")
+        access = self.access(row.pk)
         self.assertEqual(access.data, {"username": "admin", "password": "s3cret!"})
         self.assertEqual(access["Cache-Control"], "no-store")
-        self.assertNotIn("s3cret!", str(self.get("/projects/", detail=1).data))
+
+    def test_login_never_appears_in_other_endpoints(self):
+        pid = self.create(**self.LOGIN).data["id"]
+        row = Project.objects.get(pk=pid)
+        for path, params in (("/projects/", {"detail": 1}), (f"/projects/{pid}/", {}), (f"/projects/{pid}/history/", {}), ("/activity/", {})):
+            body = str(self.get(path, **params).data)
+            for secret in ("s3cret!", row.access_password_enc, row.access_username_enc):
+                self.assertNotIn(secret, body, path)
 
     def test_url_must_be_http_or_https(self):
         for bad in ("not a url", "ftp://example.com", "javascript:alert(1)", "example.com"):
@@ -535,7 +563,7 @@ class ProjectAccessApiTests(ApiTestCase):
         pid = self.create(**self.LOGIN).data["id"]
         res = self.patch(f"/projects/{pid}/", {"access_password": "new-pass"})
         self.assertEqual(res.status_code, 200)
-        self.assertEqual(self.get(f"/projects/{pid}/access/").data, {"username": "admin", "password": "new-pass"})
+        self.assertEqual(self.access(pid).data, {"username": "admin", "password": "new-pass"})
         self.assertEqual(res.data["access_url"], self.LOGIN["access_url"])
         logged = " ".join(ActivityLog.objects.values_list("description", flat=True))
         self.assertIn("You updated the login details of Access", logged)
@@ -553,3 +581,54 @@ class ProjectAccessApiTests(ApiTestCase):
         res = self.patch(f"/projects/{pid}/", {"access_url": "", "access_username": "", "access_password": ""})
         self.assertEqual((res.data["access_url"], res.data["has_access_login"]), ("", False))
         self.assertEqual(Project.objects.get(pk=pid).access_password_enc, "")
+
+    # --- who may read and write the login (enforced even while DJANGO_API_REQUIRE_AUTH is off) ---
+
+    def test_anonymous_cannot_read_or_write_the_login(self):
+        pid = self.create(**self.LOGIN).data["id"]
+        self.sign_in(None)
+        self.assertEqual(self.access(pid).status_code, 401)
+        self.assertEqual(self.patch(f"/projects/{pid}/", {"access_password": "hijack"}).status_code, 401)
+        self.assertEqual(self.create(name="Anon", access_password="x").status_code, 401)
+        self.sign_in(self.allowed)
+        self.assertEqual(self.access(pid).data["password"], "s3cret!")
+
+    def test_manager_without_the_permission_gets_403(self):
+        pid = self.create(**self.LOGIN).data["id"]
+        self.sign_in(self.plain)
+        self.assertEqual(self.access(pid).status_code, 403)
+        self.assertEqual(self.patch(f"/projects/{pid}/", {"access_username": "", "access_password": ""}).status_code, 403)
+        self.assertEqual(self.create(name="Plain", access_username="someone").status_code, 403)
+        # Everything else still works for them, including the project URL and a project without a login.
+        self.assertEqual(self.patch(f"/projects/{pid}/", {"access_url": "https://other.example.com"}).status_code, 200)
+        self.assertEqual(self.create(name="Plain 2", access_username="", access_password="").status_code, 201)
+        self.sign_in(self.allowed)
+        self.assertEqual(self.access(pid).data, {"username": "admin", "password": "s3cret!"})
+
+    def test_permission_through_a_group_and_superuser(self):
+        pid = self.create(**self.LOGIN).data["id"]
+        group = Group.objects.create(name="Credential keepers")
+        group.permissions.add(Permission.objects.get(codename="view_project_access"))
+        self.plain.groups.add(group)
+        self.sign_in(self.plain)
+        self.assertEqual(self.access(pid).status_code, 200)
+        boss = get_user_model().objects.create_superuser("boss", password="x-Pass-12345")
+        self.sign_in(boss)
+        self.assertEqual(self.access(pid).status_code, 200)
+
+    def test_non_staff_user_is_refused(self):
+        pid = self.create(**self.LOGIN).data["id"]
+        outsider = get_user_model().objects.create_user("outsider", password="x-Pass-12345")
+        outsider.user_permissions.add(Permission.objects.get(codename="view_project_access"))
+        self.sign_in(outsider)
+        self.assertEqual(self.access(pid).status_code, 403)
+
+    @override_settings(API_REQUIRE_AUTH=True)
+    def test_with_sign_in_required_anonymous_gets_401_everywhere(self):
+        pid = self.create(**self.LOGIN).data["id"]
+        self.sign_in(None)
+        for path in ("/projects/", f"/projects/{pid}/", f"/projects/{pid}/access/"):
+            self.assertEqual(self.get(path).status_code, 401, path)
+        self.sign_in(self.plain)
+        self.assertEqual(self.get("/projects/").status_code, 200)
+        self.assertEqual(self.access(pid).status_code, 403)

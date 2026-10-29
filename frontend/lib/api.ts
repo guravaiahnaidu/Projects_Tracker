@@ -112,6 +112,7 @@ export interface SessionUser {
   is_staff: boolean;
   is_superuser: boolean;
   groups: string[];
+  can_manage_project_access?: boolean; // may see and change project usernames / passwords (absent on older backends)
 }
 
 interface SessionResponse {

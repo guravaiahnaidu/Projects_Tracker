@@ -12,6 +12,15 @@ def is_manager(user) -> bool:
     return bool(user and user.is_authenticated and user.is_active and (user.is_staff or user.is_superuser))
 
 
+PROJECT_ACCESS_PERMISSION = "projects.view_project_access"
+
+
+def can_manage_project_access(user) -> bool:
+    """Project logins (username / password): a signed-in manager who was explicitly given the permission, directly or
+    through a group. Superusers have every permission."""
+    return is_manager(user) and user.has_perm(PROJECT_ACCESS_PERMISSION)
+
+
 def role_of(user) -> str:
     return "admin" if user.is_superuser else "manager"
 
@@ -23,6 +32,18 @@ class IsManager(BasePermission):
 
     def has_permission(self, request, view):
         return is_manager(request.user)
+
+
+class CanManageProjectAccess(BasePermission):
+    """Always enforced, whatever DJANGO_API_REQUIRE_AUTH says: no token -> 401, a user without the permission -> 403."""
+
+    message = "You don't have permission to view or change project login details."
+
+    def has_permission(self, request, view):
+        # A method the view does not have gets its usual 405 (no data is involved either way).
+        if not hasattr(view, request.method.lower()):
+            return True
+        return can_manage_project_access(request.user)
 
 
 class ApiAccessPolicy(BasePermission):

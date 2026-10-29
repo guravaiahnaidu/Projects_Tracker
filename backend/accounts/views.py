@@ -24,7 +24,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 from common.throttling import LoginRateThrottle
 
-from .permissions import IsManager, is_manager, role_of
+from .permissions import IsManager, can_manage_project_access, is_manager, role_of
 
 
 class InvalidCredentials(AuthenticationFailed):
@@ -51,6 +51,7 @@ def user_payload(user) -> dict:
         "is_staff": user.is_staff,
         "is_superuser": user.is_superuser,
         "groups": sorted(user.groups.values_list("name", flat=True)),
+        "can_manage_project_access": can_manage_project_access(user),
     }
 
 

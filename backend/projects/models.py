@@ -51,6 +51,8 @@ class Project(models.Model):
 
     class Meta:
         ordering = ["id"]
+        # Granted explicitly (user or group); see accounts.permissions.can_manage_project_access.
+        permissions = [("view_project_access", "Can view and change project login details")]
         constraints = [
             models.CheckConstraint(
                 condition=models.Q(start_date__isnull=True)

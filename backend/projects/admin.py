@@ -22,6 +22,7 @@ class ProjectAdmin(admin.ModelAdmin):
     ordering = ("id",)
     autocomplete_fields = ("lead",)
     readonly_fields = ("created_at", "updated_at")
+    exclude = ("access_username_enc", "access_password_enc")  # ciphertext; managed through the API only
     inlines = (ProjectMemberInline, ProjectObjectiveInline)
 
 

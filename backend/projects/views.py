@@ -6,6 +6,7 @@ from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from accounts.permissions import CanManageProjectAccess, can_manage_project_access
 from activity.models import ActivityLog
 from activity.services import log
 from activity.views import activity_page
@@ -47,6 +48,18 @@ def get_project(pk, detail: bool = True, lock: bool = False) -> Project:
 
 def detail_response(pk, status=200):
     return Response(project_payload(get_project(pk), detail=True), status=status)
+
+
+LOGIN_FIELDS = ("access_username", "access_password")
+
+
+def _check_login_write(view: APIView, request, creating: bool) -> None:
+    """Setting or clearing a project's username / password needs the same permission as reading them.
+    On create, empty values (no login) are allowed for everyone. No token -> 401, no permission -> 403."""
+    data = request.data if isinstance(request.data, dict) else {}
+    sent = [f for f in LOGIN_FIELDS if f in data and (not creating or data[f])]
+    if sent and not can_manage_project_access(request.user):
+        view.permission_denied(request, message=CanManageProjectAccess.message)
 
 
 def _set_lead_membership(project: Project, new_lead, old_lead):
@@ -94,6 +107,7 @@ class ProjectListView(APIView):
 
     @transaction.atomic
     def post(self, request):
+        _check_login_write(self, request, creating=True)
         ser = ProjectCreateSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         data = ser.validated_data
@@ -113,6 +127,7 @@ class ProjectDetailView(APIView):
 
     @transaction.atomic
     def patch(self, request, pk):
+        _check_login_write(self, request, creating=False)
         project = get_project(pk, lock=True)
         ser = ProjectUpdateSerializer(project, data=request.data, partial=True)
         ser.is_valid(raise_exception=True)
@@ -192,7 +207,10 @@ class ProjectDetailView(APIView):
 
 
 class ProjectAccessView(APIView):
-    """The saved project login, decrypted. Kept off the project payload so it is only sent when the edit form asks."""
+    """The saved project login, decrypted. Kept off the project payload so it is only sent when the edit form asks,
+    and only to managers explicitly allowed to see project logins (always enforced, even with the API open)."""
+
+    permission_classes = [CanManageProjectAccess]
 
     def get(self, request, pk):
         project = get_project(pk, detail=False)

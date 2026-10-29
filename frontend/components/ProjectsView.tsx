@@ -17,7 +17,7 @@ import {
   type ProjectStatus,
   agoLabel,
 } from "@/lib/data";
-import { api, ApiError, errorMessage, type ProjectPatch } from "@/lib/api";
+import { api, ApiError, errorMessage, getSessionUser, type ProjectPatch } from "@/lib/api";
 import { applyProject, loadMoreProjectHistory, loadProjectHistory, memberId, mutate, nowMs, numericId, SCOPES, useStore, type Scope } from "@/lib/store";
 import { addDaysIso, isoToLocalDate, minutesBetween } from "@/lib/serverClock";
 import { Combobox, DateField } from "./FormControls";
@@ -379,9 +379,11 @@ function ProjectDialog({
   const [accessPassword, setAccessPassword] = useState("");
   const [showUsername, setShowUsername] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  // Only managers given the "project login" permission see the username / password; the server enforces it too.
+  const canLogin = !!getSessionUser()?.can_manage_project_access;
   // The saved login is not part of the project list; when editing it is fetched once, and the fields stay locked until it arrives.
   const [savedLogin, setSavedLogin] = useState<{ username: string; password: string } | null>(null);
-  const [loginState, setLoginState] = useState<"loading" | "ready" | "error">(editing ? "loading" : "ready");
+  const [loginState, setLoginState] = useState<"loading" | "ready" | "error">(editing && canLogin ? "loading" : "ready");
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleteError, setDeleteError] = useState("");
   const [deleting, setDeleting] = useState(false);
@@ -392,7 +394,7 @@ function ProjectDialog({
   const [serverFields, setServerFields] = useState<Partial<Record<NewProjectField, string>>>({});
 
   useEffect(() => {
-    if (!project) return;
+    if (!project || !canLogin) return;
     let live = true;
     api
       .getProjectAccess(numericId(project.id))
@@ -407,7 +409,7 @@ function ProjectDialog({
     return () => {
       live = false;
     };
-  }, [project]);
+  }, [project, canLogin]);
 
   const clean = (s: string) => s.trim().replace(/\s+/g, " ");
   const departmentOptions = departments.map((d) => ({ value: d, label: d }));
@@ -533,8 +535,7 @@ function ProjectDialog({
             priority,
             description: description.trim(),
             access_url: accessUrl.trim(),
-            access_username: accessUsername,
-            access_password: accessPassword,
+            ...(canLogin ? { access_username: accessUsername, access_password: accessPassword } : {}),
           }),
         SCOPES.newProject,
       );
@@ -806,53 +807,60 @@ function ProjectDialog({
             )}
           </div>
 
-          <div className="mt-4 grid gap-4 sm:grid-cols-2">
-            <div>
-              <label htmlFor="np-accessUsername" className={label}>
-                Username <span className="font-normal text-muted">(optional)</span>
-              </label>
-              <RevealInput
-                id="np-accessUsername"
-                label="username"
-                show={showUsername}
-                onToggle={() => setShowUsername((v) => !v)}
-                invalid={!!errorFor("accessUsername")}
-                value={accessUsername}
-                disabled={loginState !== "ready"}
-                onChange={(e) => {
-                  setAccessUsername(e.target.value);
-                  edited("accessUsername");
-                }}
-                onBlur={() => touch("accessUsername")}
-                aria-describedby={errorFor("accessUsername") ? "np-accessUsername-error" : undefined}
-                placeholder={loginState === "loading" ? "Loading..." : "Enter username"}
-              />
-              {err("accessUsername")}
+          {!canLogin && (
+            <p className="mt-3 text-[13px] text-muted">
+              Only managers with permission to manage project logins can see or change the username and password.
+            </p>
+          )}
+          {canLogin && (
+            <div className="mt-4 grid gap-4 sm:grid-cols-2">
+              <div>
+                <label htmlFor="np-accessUsername" className={label}>
+                  Username <span className="font-normal text-muted">(optional)</span>
+                </label>
+                <RevealInput
+                  id="np-accessUsername"
+                  label="username"
+                  show={showUsername}
+                  onToggle={() => setShowUsername((v) => !v)}
+                  invalid={!!errorFor("accessUsername")}
+                  value={accessUsername}
+                  disabled={loginState !== "ready"}
+                  onChange={(e) => {
+                    setAccessUsername(e.target.value);
+                    edited("accessUsername");
+                  }}
+                  onBlur={() => touch("accessUsername")}
+                  aria-describedby={errorFor("accessUsername") ? "np-accessUsername-error" : undefined}
+                  placeholder={loginState === "loading" ? "Loading..." : "Enter username"}
+                />
+                {err("accessUsername")}
+              </div>
+              <div>
+                <label htmlFor="np-accessPassword" className={label}>
+                  Password <span className="font-normal text-muted">(optional)</span>
+                </label>
+                <RevealInput
+                  id="np-accessPassword"
+                  label="password"
+                  show={showPassword}
+                  onToggle={() => setShowPassword((v) => !v)}
+                  invalid={!!errorFor("accessPassword")}
+                  value={accessPassword}
+                  disabled={loginState !== "ready"}
+                  onChange={(e) => {
+                    setAccessPassword(e.target.value);
+                    edited("accessPassword");
+                  }}
+                  onBlur={() => touch("accessPassword")}
+                  aria-describedby={errorFor("accessPassword") ? "np-accessPassword-error" : undefined}
+                  placeholder={loginState === "loading" ? "Loading..." : "Enter password"}
+                />
+                {err("accessPassword")}
+              </div>
             </div>
-            <div>
-              <label htmlFor="np-accessPassword" className={label}>
-                Password <span className="font-normal text-muted">(optional)</span>
-              </label>
-              <RevealInput
-                id="np-accessPassword"
-                label="password"
-                show={showPassword}
-                onToggle={() => setShowPassword((v) => !v)}
-                invalid={!!errorFor("accessPassword")}
-                value={accessPassword}
-                disabled={loginState !== "ready"}
-                onChange={(e) => {
-                  setAccessPassword(e.target.value);
-                  edited("accessPassword");
-                }}
-                onBlur={() => touch("accessPassword")}
-                aria-describedby={errorFor("accessPassword") ? "np-accessPassword-error" : undefined}
-                placeholder={loginState === "loading" ? "Loading..." : "Enter password"}
-              />
-              {err("accessPassword")}
-            </div>
-          </div>
-          {loginState === "error" && (
+          )}
+          {canLogin && loginState === "error" && (
             <p role="alert" className="mt-3 text-[13px] text-st-amber-strong">
               The saved login could not be loaded, so it is locked and will not be changed. Close and reopen this form to try again.
             </p>
