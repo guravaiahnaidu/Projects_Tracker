@@ -323,11 +323,26 @@ function urlProblem(raw: string): string {
   return "Enter a valid URL starting with http:// or https://, e.g. https://domain.com.";
 }
 
-/** Text input that shows dots until the eye button is clicked. Used for the project login. */
+/** Text input that shows dots until the eye button is clicked. Used for the project login.
+ *  Masked with CSS rather than type="password", so browsers and password managers don't treat the
+ *  form as a sign-in form and fill in the user's own saved login (they ignore autocomplete="off" there). */
 function RevealInput({ id, show, onToggle, label, invalid, ...input }: { id: string; show: boolean; onToggle: () => void; label: string; invalid: boolean } & React.InputHTMLAttributes<HTMLInputElement>) {
   return (
     <div className="relative">
-      <input id={id} type={show ? "text" : "password"} autoComplete="off" spellCheck={false} aria-invalid={invalid} {...input} className={`${control} w-full pr-11 placeholder:text-muted ${invalid ? "border-st-red! focus:ring-st-red/20!" : ""}`} />
+      <input
+        id={id}
+        type="text"
+        autoComplete="off"
+        autoCorrect="off"
+        autoCapitalize="off"
+        spellCheck={false}
+        data-lpignore="true"
+        data-1p-ignore=""
+        data-form-type="other"
+        aria-invalid={invalid}
+        {...input}
+        className={`${control} w-full pr-11 placeholder:text-muted ${show ? "" : "[-webkit-text-security:disc]"} ${invalid ? "border-st-red! focus:ring-st-red/20!" : ""}`}
+      />
       <button
         type="button"
         onClick={onToggle}
@@ -609,7 +624,7 @@ function ProjectDialog({
         </>
       }
     >
-      <form id="new-project-form" onSubmit={submit} noValidate className="space-y-4">
+      <form id="new-project-form" onSubmit={submit} noValidate autoComplete="off" className="space-y-4">
         <p className="text-sm text-muted">
           Fields marked <span className="text-st-red-strong">*</span> are required.
         </p>
@@ -787,6 +802,9 @@ function ProjectDialog({
               type="url"
               inputMode="url"
               autoComplete="off"
+              data-lpignore="true"
+              data-1p-ignore=""
+              data-form-type="other"
               maxLength={500}
               value={accessUrl}
               onChange={(e) => {
