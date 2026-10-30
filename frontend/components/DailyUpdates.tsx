@@ -2,15 +2,19 @@
 
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { projectById, projects } from "@/lib/data";
-import { errorMessage } from "@/lib/api";
+import { errorMessage, getSessionUser } from "@/lib/api";
 import {
   addFeedback,
+  deleteFeedback,
+  deleteUpdate,
+  editFeedback,
   FEEDBACK_TYPES,
   isoDay,
   markReviewed,
   REVIEW_LABEL,
   useDailyUpdates,
   type DailyUpdate,
+  type Feedback,
   type FeedbackType,
   type OverallStatus,
   type ReviewStatus,
@@ -19,7 +23,8 @@ import { loadMoreDailyUpdates, useStore } from "@/lib/store";
 import LoadMoreFooter from "./LoadMoreFooter";
 import { useNow } from "./hooks";
 import { control } from "./TasksView";
-import WorkUpdateForm from "./WorkUpdateForm";
+import { ConfirmDialog } from "./ui";
+import WorkUpdateForm, { EditWorkUpdateForm } from "./WorkUpdateForm";
 
 /* ---------- Formatting ---------- */
 
@@ -94,6 +99,185 @@ function Section({ title, items, empty }: { title: string; items: string[]; empt
   );
 }
 
+const FEEDBACK_MAX = 2000; // matches the backend's FEEDBACK_MAX
+const iconBtn =
+  "flex h-8 w-8 items-center justify-center rounded-md text-muted hover:bg-track hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-st-blue/40 disabled:opacity-40";
+
+/** One feedback entry. Managers can edit it in place or delete it (after a confirmation); the server enforces both. */
+function FeedbackItem({ feedback: f, canManage, onNotice }: { feedback: Feedback; canManage: boolean; onNotice: (text: string) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [type, setType] = useState<FeedbackType>(f.type);
+  const [text, setText] = useState(f.content);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [confirming, setConfirming] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
+  const busy = useRef(false); // blocks double submits from repeated clicks
+
+  const trimmed = text.trim();
+  const problem = !trimmed ? "Write some feedback first." : trimmed.length > FEEDBACK_MAX ? `Keep the feedback under ${FEEDBACK_MAX} characters.` : "";
+  const changed = type !== f.type || trimmed !== f.content;
+
+  const startEdit = () => {
+    setType(f.type);
+    setText(f.content);
+    setError("");
+    setEditing(true);
+  };
+  const cancelEdit = () => {
+    if (saving) return;
+    setEditing(false);
+    setError("");
+  };
+
+  const save = async (e: FormEvent) => {
+    e.preventDefault();
+    if (busy.current || problem || !changed) return;
+    busy.current = true;
+    setSaving(true);
+    setError("");
+    try {
+      await editFeedback(f, type, trimmed);
+      setEditing(false);
+      onNotice("✓ Feedback updated");
+    } catch (err) {
+      setError(errorMessage(err)); // the text stays so nothing typed is lost
+    } finally {
+      busy.current = false;
+      setSaving(false);
+    }
+  };
+
+  const remove = async () => {
+    if (busy.current) return;
+    busy.current = true;
+    setDeleting(true);
+    setDeleteError("");
+    try {
+      await deleteFeedback(f);
+      setConfirming(false);
+      onNotice("✓ Feedback deleted");
+    } catch (err) {
+      setDeleteError(errorMessage(err));
+    } finally {
+      busy.current = false;
+      setDeleting(false);
+    }
+  };
+
+  const fid = `fb-${f.id}`;
+  return (
+    <li className="rounded-lg border border-line bg-surface p-3">
+      {editing ? (
+        <form onSubmit={save} className="space-y-2.5" aria-label="Edit feedback">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <label htmlFor={`${fid}-type`} className="text-sm font-semibold">
+              Edit feedback
+            </label>
+            <select
+              id={`${fid}-type`}
+              value={type}
+              onChange={(e) => setType(e.target.value as FeedbackType)}
+              disabled={saving}
+              className={`${control} h-9! w-full text-sm! sm:w-52`}
+            >
+              {FEEDBACK_TYPES.map((t) => (
+                <option key={t}>{t}</option>
+              ))}
+            </select>
+          </div>
+          <textarea
+            aria-label="Feedback"
+            rows={3}
+            autoFocus
+            value={text}
+            disabled={saving}
+            onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key !== "Escape") return;
+              e.stopPropagation(); // Escape cancels the edit; it must not also close the panel
+              cancelEdit();
+            }}
+            aria-invalid={!!problem}
+            aria-describedby={error || problem ? `${fid}-error` : undefined}
+            className={`w-full resize-y rounded-lg border bg-surface px-3 py-2 text-[15px] outline-none focus:border-st-blue focus:ring-2 focus:ring-st-blue/20 ${
+              problem ? "border-st-red focus:ring-st-red/20" : "border-line"
+            }`}
+          />
+          {(error || problem) && (
+            <p id={`${fid}-error`} role="alert" className="text-sm font-medium text-st-red-strong">
+              {error || problem}
+            </p>
+          )}
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <button type="button" onClick={cancelEdit} disabled={saving} className="h-9 rounded-lg border border-line bg-surface px-3.5 text-sm font-medium hover:bg-track disabled:opacity-60">
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={saving || !!problem || !changed}
+              className="h-9 rounded-lg bg-header px-4 text-sm font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-45 dark:bg-accent dark:text-header"
+            >
+              {saving ? "Saving..." : "Save changes"}
+            </button>
+          </div>
+        </form>
+      ) : (
+        <>
+          <div className="flex items-start justify-between gap-2">
+            <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+              <span className={`rounded-full border px-2 py-0.5 text-xs font-semibold ${feedbackTone[f.type]}`}>{f.type}</span>
+              <span className="text-xs text-muted">
+                {f.managerName} · {stamp(f.createdAt)}
+              </span>
+            </div>
+            {canManage && (
+              <div className="-my-1 -mr-1 flex shrink-0 items-center">
+                <button type="button" onClick={startEdit} aria-label={`Edit ${f.type} feedback`} title="Edit feedback" className={iconBtn}>
+                  <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden>
+                    <path d="M13.5 3.5a2.1 2.1 0 0 1 3 3L7.5 15.5 4 16.5l1-3.5 8.5-9.5Z" />
+                    <path d="M12 5l3 3" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDeleteError("");
+                    setConfirming(true);
+                  }}
+                  aria-label={`Delete ${f.type} feedback`}
+                  title="Delete feedback"
+                  aria-haspopup="dialog"
+                  className={`${iconBtn} hover:bg-st-red/8! hover:text-st-red-strong!`}
+                >
+                  <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden>
+                    <path d="M4 6h12M8 6V4.5A1.5 1.5 0 0 1 9.5 3h1A1.5 1.5 0 0 1 12 4.5V6M5.5 6l.7 9.6A1.5 1.5 0 0 0 7.7 17h4.6a1.5 1.5 0 0 0 1.5-1.4L14.5 6M8.5 9v5M11.5 9v5" />
+                  </svg>
+                </button>
+              </div>
+            )}
+          </div>
+          <p className="mt-2 whitespace-pre-line break-words text-[15px] leading-snug">{f.content}</p>
+        </>
+      )}
+
+      {confirming && (
+        <ConfirmDialog
+          title="Delete Feedback?"
+          message="Are you sure you want to delete this feedback? This action cannot be undone."
+          confirmLabel="Delete"
+          busyLabel="Deleting..."
+          busy={deleting}
+          error={deleteError}
+          onConfirm={() => void remove()}
+          onCancel={() => setConfirming(false)}
+        />
+      )}
+    </li>
+  );
+}
+
 function UpdatePanel({
   update,
   today,
@@ -101,9 +285,15 @@ function UpdatePanel({
   onOlder,
   onNewer,
   onClose,
+  onEdit,
+  onDelete,
+  savedNotice,
   reviewError,
   onRetryReview,
 }: {
+  onEdit: () => void;
+  onDelete: () => void;
+  savedNotice: boolean; // the update was just edited
   reviewError: string;
   onRetryReview: () => void;
   update: DailyUpdate;
@@ -122,6 +312,16 @@ function UpdatePanel({
   const closeRef = useRef<HTMLButtonElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const project = projectById(update.projectId);
+  // Only managers and admins sign in; the server refuses anyone else as well.
+  const session = getSessionUser();
+  const canManageFeedback = !!session && (session.is_staff || session.is_superuser);
+  const [notice, setNotice] = useState(""); // "Feedback updated" / "Feedback deleted", shown briefly
+  const showNotice = (text: string) => setNotice(text);
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(() => setNotice(""), 2500);
+    return () => clearTimeout(t);
+  }, [notice]);
 
   useEffect(() => {
     closeRef.current?.focus({ preventScroll: true });
@@ -153,7 +353,7 @@ function UpdatePanel({
   return (
     <aside
       aria-label={`Daily update, ${longDay(update.date)}`}
-      className="fixed inset-0 z-40 flex flex-col border-l border-line bg-surface shadow-[-12px_0_32px_-12px_rgb(15_31_61/0.25)] md:inset-y-0 md:left-auto md:right-0 md:w-[30%] md:min-w-[400px] md:max-w-[620px]"
+      className="fixed inset-0 z-40 flex flex-col border-l border-line bg-surface shadow-[-12px_0_32px_-12px_rgb(15_31_61/0.25)] md:inset-y-0 md:left-auto md:right-0 md:w-[45%] md:min-w-[520px] md:max-w-[900px]"
     >
       <header className="border-b border-line px-5 py-4">
         <div className="flex items-start justify-between gap-3">
@@ -180,15 +380,48 @@ function UpdatePanel({
               )}
             </div>
           </div>
-          <button
-            ref={closeRef}
-            onClick={onClose}
-            aria-label="Close update"
-            className="rounded-lg border border-line px-3 py-1.5 text-sm font-medium hover:bg-track"
-          >
-            Close
-          </button>
+          <div className="flex shrink-0 items-center gap-1.5">
+            <button
+              type="button"
+              onClick={onEdit}
+              aria-haspopup="dialog"
+              className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-line px-3 text-sm font-medium hover:bg-track focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-st-blue/40"
+            >
+              <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4" aria-hidden>
+                <path d="M13.59 3.59a2 2 0 0 1 2.82 2.82l-8.5 8.5a1 1 0 0 1-.46.26l-3.2.8a.5.5 0 0 1-.61-.6l.8-3.2a1 1 0 0 1 .26-.47l8.89-8.11Z" />
+              </svg>
+              Edit
+            </button>
+            <button
+              type="button"
+              onClick={onDelete}
+              aria-haspopup="dialog"
+              className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-line px-3 text-sm font-medium text-st-red-strong hover:bg-st-red/8 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-st-red/30"
+            >
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden>
+                <path d="M4 6h12M8 6V4.5A1.5 1.5 0 0 1 9.5 3h1A1.5 1.5 0 0 1 12 4.5V6M5.5 6l.7 9.6A1.5 1.5 0 0 0 7.7 17h4.6a1.5 1.5 0 0 0 1.5-1.4L14.5 6M8.5 9v5M11.5 9v5" />
+              </svg>
+              Delete
+            </button>
+            <button
+              ref={closeRef}
+              type="button"
+              onClick={onClose}
+              aria-label="Close update"
+              title="Close (Esc)"
+              className="flex h-9 w-9 items-center justify-center rounded-lg text-muted hover:bg-track hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-st-blue/40"
+            >
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" className="h-5 w-5" aria-hidden>
+                <path d="M5 5l10 10M15 5L5 15" />
+              </svg>
+            </button>
+          </div>
         </div>
+        {savedNotice && (
+          <p role="status" className="mt-2 text-sm font-medium text-st-green">
+            ✓ Changes saved
+          </p>
+        )}
         <div className="mt-3 flex items-center justify-between text-sm">
           <button onClick={onOlder} disabled={!onOlder} className="rounded-md px-2 py-1 font-medium hover:bg-track disabled:opacity-40">
             ← Older
@@ -224,19 +457,16 @@ function UpdatePanel({
         </div>
 
         <section className="mt-6 rounded-xl border border-accent/45 bg-accent/8 p-4" aria-label="Manager suggestions and feedback">
-          <h3 className="font-bold">Manager suggestions &amp; feedback</h3>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="font-bold">Manager suggestions &amp; feedback</h3>
+            <span role="status" className="text-sm font-medium text-st-green">
+              {notice}
+            </span>
+          </div>
           {update.feedback.length ? (
             <ol className="mt-3 space-y-2.5">
               {update.feedback.map((f) => (
-                <li key={f.id} className="rounded-lg border border-line bg-surface p-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span className={`rounded-full border px-2 py-0.5 text-xs font-semibold ${feedbackTone[f.type]}`}>{f.type}</span>
-                    <span className="text-xs text-muted">
-                      {f.managerName} · {stamp(f.createdAt)}
-                    </span>
-                  </div>
-                  <p className="mt-2 text-[15px] leading-snug">{f.content}</p>
-                </li>
+                <FeedbackItem key={f.id} feedback={f} canManage={canManageFeedback} onNotice={showNotice} />
               ))}
             </ol>
           ) : (
@@ -300,6 +530,8 @@ export default function DailyUpdates({ initialSelected }: { initialSelected?: st
   const [review, setReview] = useState<ReviewFilter>("all");
   const [selected, setSelected] = useState<string | null>(initialSelected ?? null);
   const [adding, setAdding] = useState(false); // the Employee Work Update form is open
+  const [editing, setEditing] = useState(false); // the Edit Work Update form is open for the selected update
+  const [savedId, setSavedId] = useState<string | null>(null); // briefly shows "Changes saved" after an edit
   const sectionRef = useRef<HTMLElement>(null);
 
   // Opened from the navbar search: bring the list into view (the panel opens on its own).
@@ -314,7 +546,40 @@ export default function DailyUpdates({ initialSelected }: { initialSelected?: st
     if (filtering && hasMore && !feed.moreLoading && !feed.moreError) void loadMoreDailyUpdates();
   }, [filtering, hasMore, feed.moreLoading, feed.moreError, updates.length]);
 
-  const close = () => setSelected(null);
+  const close = () => {
+    setSelected(null);
+    setEditing(false);
+  };
+
+  // Delete asks first; the server refuses while tasks are logged for the update, and that message is shown in the dialog.
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
+  const [deletedNotice, setDeletedNotice] = useState(false);
+  const askDelete = () => {
+    setDeleteError("");
+    setConfirmDelete(true);
+  };
+  const confirmDeleteUpdate = async (u: DailyUpdate) => {
+    if (deleting) return;
+    setDeleting(true);
+    setDeleteError("");
+    try {
+      await deleteUpdate(u);
+      setConfirmDelete(false);
+      close();
+      setDeletedNotice(true);
+    } catch (e) {
+      setDeleteError(errorMessage(e));
+    } finally {
+      setDeleting(false);
+    }
+  };
+  useEffect(() => {
+    if (!deletedNotice) return;
+    const t = setTimeout(() => setDeletedNotice(false), 3000);
+    return () => clearTimeout(t);
+  }, [deletedNotice]);
 
   // Opening an update (from the list, the Older/Newer buttons or the navbar search) counts as reviewing it.
   // If the server refuses, the update stays "New" and the error is shown in the panel.
@@ -328,11 +593,17 @@ export default function DailyUpdates({ initialSelected }: { initialSelected?: st
     // eslint-disable-next-line react-hooks/exhaustive-deps -- re-run only when the open update or its status changes
   }, [selectedId, selectedStatus]);
   useEffect(() => {
-    if (!selected) return;
+    // While a form is open on top, Escape belongs to that form, not the panel underneath.
+    if (!selected || editing || adding || confirmDelete) return;
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && setSelected(null);
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [selected]);
+  }, [selected, editing, adding, confirmDelete]);
+  useEffect(() => {
+    if (!savedId) return;
+    const t = setTimeout(() => setSavedId(null), 2500);
+    return () => clearTimeout(t);
+  }, [savedId]);
 
   if (!now) return null;
   const today = isoDay(now);
@@ -378,6 +649,11 @@ export default function DailyUpdates({ initialSelected }: { initialSelected?: st
             )}
           </h2>
           <p className="mt-0.5 text-sm text-muted">Record project work and review manager feedback.</p>
+          {deletedNotice && (
+            <p role="status" className="mt-1 text-sm font-medium text-st-green">
+              ✓ Daily update deleted
+            </p>
+          )}
         </div>
         <div className="flex items-center gap-4">
           <span className="hidden text-sm font-semibold md:inline">{longDay(today)}</span>
@@ -527,6 +803,10 @@ export default function DailyUpdates({ initialSelected }: { initialSelected?: st
       {adding && <WorkUpdateForm onClose={() => setAdding(false)} onShared={() => setAdding(false)} />}
 
       {current && (
+        // Clicking anywhere outside the panel closes it.
+        <div className="fixed inset-0 z-30 bg-black/25" onClick={close} aria-hidden />
+      )}
+      {current && (
         <UpdatePanel
           key={current.id}
           update={current}
@@ -535,8 +815,43 @@ export default function DailyUpdates({ initialSelected }: { initialSelected?: st
           onOlder={index < browse.length - 1 ? () => open(browse[index + 1]) : undefined}
           onNewer={index > 0 ? () => open(browse[index - 1]) : undefined}
           onClose={close}
+          onEdit={() => setEditing(true)}
+          onDelete={askDelete}
+          savedNotice={savedId === current.id}
           reviewError={reviewFailure?.id === current.id && current.reviewStatus === "new" ? reviewFailure.message : ""}
           onRetryReview={() => markReviewed(current).then(() => setReviewFailure(null), (e) => setReviewFailure({ id: current.id, message: errorMessage(e) }))}
+        />
+      )}
+
+      {current && editing && (
+        <EditWorkUpdateForm
+          key={`edit-${current.id}`} // must differ from the panel's key: they are siblings
+          update={current}
+          onClose={() => setEditing(false)}
+          onSaved={() => {
+            setEditing(false);
+            setSavedId(current.id);
+          }}
+        />
+      )}
+
+      {current && confirmDelete && (
+        <ConfirmDialog
+          title="Delete this daily update?"
+          message={
+            <>
+              {current.employeeName}&apos;s update for <span className="font-semibold">{projectById(current.projectId).name}</span> on{" "}
+              {longDay(current.date)} will be removed
+              {current.feedback.length ? `, along with ${current.feedback.length} feedback entr${current.feedback.length === 1 ? "y" : "ies"}` : ""}. This
+              cannot be undone.
+            </>
+          }
+          confirmLabel="Delete update"
+          busyLabel="Deleting..."
+          busy={deleting}
+          error={deleteError}
+          onConfirm={() => void confirmDeleteUpdate(current)}
+          onCancel={() => setConfirmDelete(false)}
         />
       )}
     </section>

@@ -5,10 +5,12 @@ from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from accounts.permissions import AlwaysManager
 from activity.services import log
 from common.exceptions import Conflict
 from common.limits import LIST_DEFAULT_LIMIT, LIST_MAX_LIMIT
 from common.params import OFFSET_MAX, parse_id, parse_int
+from tasks.models import Task
 
 from .models import DailyUpdate, Feedback, ReviewStatus
 from .serializers import DailyUpdateEditSerializer, DailyUpdateWriteSerializer, FeedbackSerializer, update_payload
@@ -22,6 +24,10 @@ def _payloads(updates) -> list:
     return [update_payload(u, found.get((u.employee_id, u.project_id, u.date), [])) for u in updates]
 
 DUPLICATE_MESSAGE = "An update from this person for this project and day already exists. Edit it instead."
+HAS_TASKS_MESSAGE = (
+    "This update is built from tasks logged for this person, project and day. "
+    "Delete those tasks or change their work date in the Tasks tab first."
+)
 
 
 def _queryset():
@@ -114,10 +120,32 @@ class DailyUpdateDetailView(APIView):
         # Marking as reviewed only moves New -> Reviewed; later states are never downgraded.
         if data.pop("review_status", None) == ReviewStatus.REVIEWED and update.review_status == ReviewStatus.NEW:
             update.review_status = ReviewStatus.REVIEWED
+        changed = [field for field, value in data.items() if getattr(update, field) != value]
         for field, value in data.items():
             setattr(update, field, value)
         update.save()
+        if changed:
+            log(
+                "update.edited",
+                "update",
+                update.id,
+                f"You edited {update.employee.name}'s daily update for {update.project.name}",
+                project=update.project,
+                fields=changed,
+            )
         return Response(update_payload(get_update(pk)))
+
+    @transaction.atomic
+    def delete(self, request, pk):
+        update = get_update(pk, lock=True)
+        # Logged tasks would recreate it at once (see tasklink.sync); they have to be removed or moved first.
+        if Task.objects.filter(owner_id=update.employee_id, project_id=update.project_id, work_date=update.date).exists():
+            raise Conflict(HAS_TASKS_MESSAGE)
+        name, project, day = update.employee.name, update.project, update.date
+        update_id = update.id
+        update.delete()  # its feedback goes with it; its history is purged (activity.signals)
+        log("update.deleted", "update", update_id, f"You deleted {name}'s daily update for {project.name} ({day:%d %b %Y})", project=project)
+        return Response(status=204)
 
 
 class DailyUpdateFeedbackView(APIView):
@@ -142,3 +170,56 @@ class DailyUpdateFeedbackView(APIView):
             project=update.project,
         )
         return Response(update_payload(get_update(pk)), status=201)
+
+
+def _feedback_of(update: DailyUpdate, feedback_id) -> Feedback:
+    """The feedback entry, only if it belongs to this update (another update's entry is a 404)."""
+    try:
+        return Feedback.objects.select_for_update().get(pk=feedback_id, update=update)
+    except Feedback.DoesNotExist:
+        raise NotFound("Feedback not found.")
+
+
+class DailyUpdateFeedbackDetailView(APIView):
+    """Edit or delete one feedback entry. Always needs a signed-in manager or admin (employees have no login)."""
+
+    permission_classes = [AlwaysManager]
+
+    @transaction.atomic
+    def patch(self, request, pk, feedback_id):
+        update = get_update(pk, lock=True)
+        feedback = _feedback_of(update, feedback_id)
+        ser = FeedbackSerializer(data=request.data, partial=True)
+        ser.is_valid(raise_exception=True)
+        changed = [f for f, v in ser.validated_data.items() if getattr(feedback, f) != v]
+        if changed:
+            # Only the type and text change; the author and the time it was given are kept.
+            for field in changed:
+                setattr(feedback, field, ser.validated_data[field])
+            feedback.save(update_fields=changed)
+            log(
+                "update.feedback_edited",
+                "update",
+                update.id,
+                f"You edited feedback on {update.employee.name}'s update for {update.project.name}",
+                project=update.project,
+                feedback_id=feedback.id,
+            )
+        return Response(update_payload(get_update(pk)))
+
+    @transaction.atomic
+    def delete(self, request, pk, feedback_id):
+        update = get_update(pk, lock=True)
+        _feedback_of(update, feedback_id).delete()
+        # With no feedback left the update is back to "Reviewed" (it was opened when the feedback was given).
+        if update.review_status == ReviewStatus.FEEDBACK and not update.feedback.exists():
+            update.review_status = ReviewStatus.REVIEWED
+            update.save(update_fields=["review_status", "updated_at"])
+        log(
+            "update.feedback_deleted",
+            "update",
+            update.id,
+            f"You deleted feedback on {update.employee.name}'s update for {update.project.name}",
+            project=update.project,
+        )
+        return Response(update_payload(get_update(pk)))

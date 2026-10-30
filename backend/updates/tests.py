@@ -1,6 +1,85 @@
+from django.contrib.auth import get_user_model
+from django.test import override_settings
+from rest_framework_simplejwt.tokens import AccessToken
+
 from activity.models import ActivityLog
 from tests.support import API, ApiTestCase, day
 from updates.models import DailyUpdate, Feedback
+
+
+class FeedbackEditDeleteTests(ApiTestCase):
+    """Editing and deleting one feedback entry: managers and admins only (always enforced), scoped to its update."""
+
+    def setUp(self):
+        self.manager = get_user_model().objects.create_user("mgr", password="x-Pass-12345", is_staff=True)
+        self.sign_in(self.manager)
+        project, person = self.project(name="Portal"), self.member(name="Dev One")
+        self.uid = self.post(
+            "/daily-updates/", {"employee_id": person.id, "project_id": project.id, "date": day(0).isoformat(), "completed": ["Built it"]}
+        ).data["id"]
+        self.first = self.give("Suggestion", "Add tests")
+        self.second = self.give("Appreciation", "Great work")
+
+    def sign_in(self, user):
+        self.client.credentials(**({"HTTP_AUTHORIZATION": f"Bearer {AccessToken.for_user(user)}"} if user else {}))
+
+    def give(self, type_, content):
+        return self.post(f"/daily-updates/{self.uid}/feedback/", {"type": type_, "content": content}).data["feedback"][-1]
+
+    def url(self, fid, uid=None):
+        return f"/daily-updates/{uid or self.uid}/feedback/{fid}/"
+
+    def test_edit_changes_only_that_entry_and_keeps_author_and_time(self):
+        res = self.patch(self.url(self.first["id"]), {"type": "Next steps", "content": "  Add more tests  ", "manager_name": "Impostor"})
+        self.assertEqual(res.status_code, 200, res.data)
+        edited, other = res.data["feedback"]
+        self.assertEqual((edited["id"], edited["type"], edited["content"]), (self.first["id"], "Next steps", "Add more tests"))
+        self.assertEqual((edited["manager_name"], edited["created_at"]), (self.first["manager_name"], self.first["created_at"]))
+        self.assertEqual(other, self.second)
+        self.assertEqual(Feedback.objects.count(), 2)  # updated in place, no duplicate
+        self.assertTrue(ActivityLog.objects.filter(action="update.feedback_edited").exists())
+
+    def test_edit_validation(self):
+        for bad in ({"content": "   "}, {"type": "Praise"}, {"content": "x" * 2001}):
+            self.assertEqual(self.patch(self.url(self.first["id"]), bad).status_code, 400, bad)
+        self.assertEqual(Feedback.objects.get(pk=self.first["id"]).content, "Add tests")
+
+    def test_delete_removes_only_that_entry(self):
+        res = self.delete(self.url(self.first["id"]))
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual([f["id"] for f in res.data["feedback"]], [self.second["id"]])
+        self.assertEqual(res.data["review_status"], "feedback")
+        self.assertEqual(res.data["completed"], ["Built it"])  # the work summary is untouched
+        self.assertTrue(ActivityLog.objects.filter(action="update.feedback_deleted").exists())
+        self.assertEqual(self.delete(self.url(self.first["id"])).status_code, 404)
+
+    def test_deleting_the_last_entry_returns_update_to_reviewed(self):
+        self.delete(self.url(self.first["id"]))
+        res = self.delete(self.url(self.second["id"]))
+        self.assertEqual((res.data["feedback"], res.data["review_status"]), ([], "reviewed"))
+
+    def test_entry_of_another_update_is_not_found(self):
+        other = self.post(
+            "/daily-updates/", {"employee_id": self.member(name="Dev Two").id, "project_id": self.project(name="Other").id, "date": day(0).isoformat(), "completed": ["x"]}
+        ).data["id"]
+        self.assertEqual(self.patch(self.url(self.first["id"], other), {"content": "Hijack"}).status_code, 404)
+        self.assertEqual(self.delete(self.url(self.first["id"], other)).status_code, 404)
+        self.assertEqual(Feedback.objects.get(pk=self.first["id"]).content, "Add tests")
+
+    def test_needs_a_manager_even_with_sign_in_switched_off(self):
+        for user, code in ((None, 401), (get_user_model().objects.create_user("plain", password="x-Pass-12345"), 403)):
+            self.sign_in(user)
+            self.assertEqual(self.patch(self.url(self.first["id"]), {"content": "Changed"}).status_code, code)
+            self.assertEqual(self.delete(self.url(self.first["id"])).status_code, code)
+        self.assertEqual(Feedback.objects.count(), 2)
+        admin = get_user_model().objects.create_superuser("boss", password="x-Pass-12345")
+        self.sign_in(admin)
+        self.assertEqual(self.delete(self.url(self.first["id"])).status_code, 200)
+
+    @override_settings(API_REQUIRE_AUTH=True)
+    def test_with_sign_in_required_anonymous_gets_401(self):
+        self.sign_in(None)
+        self.assertEqual(self.patch(self.url(self.first["id"]), {"content": "Changed"}).status_code, 401)
 
 
 class DailyUpdateApiTests(ApiTestCase):
@@ -119,6 +198,43 @@ class DailyUpdateApiTests(ApiTestCase):
         self.assertEqual(DailyUpdate.objects.count(), 1)
         self.assertEqual(self.patch(f"/daily-updates/{uid}/", {"status": "Meh"}).status_code, 400)
         self.assertEqual(self.patch("/daily-updates/9999/", {"notes": "x"}).status_code, 404)
+
+    def test_edit_cleans_logs_and_keeps_review_and_feedback(self):
+        uid = self.create().data["id"]
+        self.post(f"/daily-updates/{uid}/feedback/", {"type": "Suggestion", "content": "Nice"})
+        res = self.patch(f"/daily-updates/{uid}/", {"completed": [" Built  the page ", "", "Wrote tests"], "notes": " Done "})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["completed"], ["Built the page", "Wrote tests"])
+        self.assertEqual(res.data["own"]["completed"], ["Built the page", "Wrote tests"])
+        self.assertEqual(res.data["notes"], "Done")
+        self.assertEqual(res.data["review_status"], "feedback")
+        self.assertEqual(len(res.data["feedback"]), 1)
+        self.assertTrue(ActivityLog.objects.filter(action="update.edited", entity_id=uid).exists())
+
+    def test_edit_without_changes_is_not_logged(self):
+        uid = self.create().data["id"]
+        self.patch(f"/daily-updates/{uid}/", {"review_status": "reviewed"})
+        self.patch(f"/daily-updates/{uid}/", {"completed": ["Built the page"]})
+        self.assertFalse(ActivityLog.objects.filter(action="update.edited").exists())
+
+    def test_delete_removes_update_feedback_and_history(self):
+        uid = self.create().data["id"]
+        self.post(f"/daily-updates/{uid}/feedback/", {"type": "Suggestion", "content": "Nice"})
+        res = self.delete(f"/daily-updates/{uid}/")
+        self.assertEqual(res.status_code, 204)
+        self.assertFalse(DailyUpdate.objects.filter(pk=uid).exists())
+        self.assertFalse(Feedback.objects.exists())
+        self.assertEqual(list(ActivityLog.objects.filter(entity_type="update").values_list("action", flat=True)), ["update.deleted"])
+        self.assertEqual(self.delete(f"/daily-updates/{uid}/").status_code, 404)
+        # the same person, project and day can be shared again
+        self.assertEqual(self.create().status_code, 201)
+
+    def test_edit_cannot_empty_a_shared_update(self):
+        uid = self.create().data["id"]
+        res = self.patch(f"/daily-updates/{uid}/", {"completed": [" "], "in_progress": [], "next_steps": [], "notes": ""})
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("completed", res.data["error"]["fields"])
+        self.assertEqual(DailyUpdate.objects.get(pk=uid).completed, ["Built the page"])
 
     # --- feedback ---
     def test_feedback_appends_and_sets_status(self):
@@ -275,4 +391,15 @@ class TasksFeedDailyUpdatesTests(ApiTestCase):
         u = self.updates()[0]
         self.assertFalse(u["from_tasks"])
         self.assertEqual(u["completed"], ["Reconcile payroll", "Call bank", "File returns"])
+        self.assertEqual(u["own"]["completed"], ["Reconcile payroll", "Call bank"])  # typed text only
         self.assertEqual(DailyUpdate.objects.count(), 1)
+
+    def test_update_with_logged_tasks_cannot_be_deleted(self):
+        tid = self.add_task()
+        uid = self.updates()[0]["id"]
+        res = self.delete(f"/daily-updates/{uid}/")
+        self.assertEqual(res.status_code, 409)
+        self.assertIn("Tasks tab", res.data["error"]["message"])
+        self.assertTrue(DailyUpdate.objects.filter(pk=uid).exists())
+        self.delete(f"/tasks/{tid}/")  # with its tasks gone the auto-built update goes too
+        self.assertFalse(DailyUpdate.objects.filter(pk=uid).exists())

@@ -232,6 +232,12 @@ export const mapDailyUpdate = (u: ApiDailyUpdate): DailyUpdate => ({
   reviewStatus: u.review_status as ReviewStatus,
   fromTasks: !!u.from_tasks,
   taskCount: u.tasks?.length ?? 0,
+  // An older backend sends no `own`: without tasks the lists are all typed text; with tasks they can't be split.
+  own: u.own
+    ? { completed: u.own.completed, inProgress: u.own.in_progress, nextSteps: u.own.next_steps, blockers: u.own.blockers, status: u.own.status as OverallStatus }
+    : u.tasks?.length
+      ? { completed: [], inProgress: [], nextSteps: [], blockers: [], status: "On track" }
+      : { completed: u.completed, inProgress: u.in_progress, nextSteps: u.next_steps, blockers: u.blockers, status: u.status as OverallStatus },
   feedback: u.feedback.map(
     (f): Feedback => ({
       id: String(f.id),
@@ -596,6 +602,7 @@ export function ensureLoaded() {
  *    decisions/attention figures and the decision history (resolve adds a record, undo removes it).
  *  - review: opening a daily update marks it reviewed; feedback also writes an activity entry.
  *  - shareUpdate: a new daily update row and its "shared a daily update" activity entry.
+ *  - editUpdate: the edited or deleted daily update and its activity entry.
  *  - objective, projectMember: only the project (objectives/members) and its history change.
  *  - newProject: a new project row, its first history entry and the dashboard totals.
  *  - newEmployee: the person, their project memberships, activity, workload figures and department list.
@@ -609,6 +616,7 @@ export const SCOPES = {
   review: ["dailyUpdates"],
   feedback: ["dailyUpdates", "activity"],
   shareUpdate: ["dailyUpdates", "activity"],
+  editUpdate: ["dailyUpdates", "activity"],
   objective: ["projects", "activity"],
   projectMember: ["projects", "activity"],
   newProject: ["projects", "activity", "dashboard"],

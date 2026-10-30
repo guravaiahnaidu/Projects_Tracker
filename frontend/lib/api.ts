@@ -366,6 +366,8 @@ export interface ApiDailyUpdate {
   feedback: ApiFeedback[];
   from_tasks?: boolean; // created automatically from the employee's tasks for that project and day
   tasks?: { id: number; title: string; state: string; priority: string }[];
+  // The typed text alone, without task items merged in (absent on older backends).
+  own?: { completed: string[]; in_progress: string[]; next_steps: string[]; blockers: string[]; status: string };
 }
 
 export interface ApiDecisionRecord {
@@ -402,6 +404,16 @@ export interface DailyUpdateInput {
   project_id: number;
   date: string; // YYYY-MM-DD, not in the future
   completed: string[];
+}
+
+/** Editable content of a daily update; employee, project and date identify it and cannot change. */
+export interface DailyUpdateEditInput {
+  completed?: string[];
+  in_progress?: string[];
+  next_steps?: string[];
+  blockers?: string[];
+  notes?: string;
+  status?: string;
 }
 
 
@@ -522,7 +534,13 @@ export const api = {
     get<PagedWindow<ApiDailyUpdate> & { new_count: number }>("/daily-updates/", { limit, offset }),
   createDailyUpdate: (body: DailyUpdateInput) => post<ApiDailyUpdate>("/daily-updates/", body),
   markUpdateReviewed:(id: number) => patch<ApiDailyUpdate>(`/daily-updates/${id}/`, { review_status: "reviewed" }),
+  editDailyUpdate: (id: number, body: DailyUpdateEditInput) => patch<ApiDailyUpdate>(`/daily-updates/${id}/`, body),
+  deleteDailyUpdate: (id: number) => del(`/daily-updates/${id}/`),
   addFeedback: (id: number, body: FeedbackInput) => post<ApiDailyUpdate>(`/daily-updates/${id}/feedback/`, body),
+  // Managers and admins only (enforced by the server); the author and time of the entry are kept.
+  editFeedback: (id: number, feedbackId: number, body: Partial<FeedbackInput>) =>
+    patch<ApiDailyUpdate>(`/daily-updates/${id}/feedback/${feedbackId}/`, body),
+  deleteFeedback: (id: number, feedbackId: number) => del(`/daily-updates/${id}/feedback/${feedbackId}/`),
 
   // Activity
   listActivity: (limit = 50, offset = 0) => get<PagedWindow<ApiActivity>>("/activity/", { limit, offset }),

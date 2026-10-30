@@ -62,6 +62,14 @@ class DailyUpdateEditSerializer(DailyUpdateWriteSerializer):
     date = None
     review_status = serializers.ChoiceField(choices=[(ReviewStatus.REVIEWED, "Reviewed")], required=False)
 
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        # A report shared by hand must keep some content; one built from tasks may be emptied (its tasks remain).
+        after = {n: attrs.get(n, getattr(self.instance, n)) for n in ("completed", "in_progress", "next_steps", "blockers", "notes")}
+        if not self.instance.from_tasks and not any(after.values()):
+            raise serializers.ValidationError({"completed": "Add at least one item or a note to the update."})
+        return attrs
+
 
 class FeedbackSerializer(serializers.Serializer):
     type = serializers.ChoiceField(choices=FeedbackType.choices)
@@ -97,6 +105,14 @@ def update_payload(u: DailyUpdate, tasks: list | None = None) -> dict:
         "notes": u.notes,
         "status": merged["status"],
         "from_tasks": u.from_tasks,
+        # What was typed by hand, without the task items merged into the lists above (what an edit changes).
+        "own": {
+            "completed": u.completed,
+            "in_progress": u.in_progress,
+            "next_steps": u.next_steps,
+            "blockers": u.blockers,
+            "status": u.status,
+        },
         "tasks": merged["tasks"],
         "review_status": u.review_status,
         "shared_at": u.shared_at,

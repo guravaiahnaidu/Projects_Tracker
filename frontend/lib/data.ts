@@ -301,6 +301,8 @@ export interface DailyUpdate {
   feedback: Feedback[];
   fromTasks: boolean; // built from logged tasks rather than shared by hand
   taskCount: number; // tasks behind this update (their items are merged into the lists above)
+  // The typed text alone, without task items: what the Edit form shows and changes.
+  own: { completed: string[]; inProgress: string[]; nextSteps: string[]; blockers: string[]; status: OverallStatus };
 }
 
 export interface DecisionRecord {

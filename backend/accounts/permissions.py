@@ -46,6 +46,18 @@ class CanManageProjectAccess(BasePermission):
         return can_manage_project_access(request.user)
 
 
+class AlwaysManager(BasePermission):
+    """A signed-in manager or admin, whatever DJANGO_API_REQUIRE_AUTH says: no token -> 401, a non-manager -> 403."""
+
+    message = IsManager.message
+
+    def has_permission(self, request, view):
+        # A method the view does not have gets its usual 405 (no data is involved either way).
+        if not hasattr(view, request.method.lower()):
+            return True
+        return is_manager(request.user)
+
+
 class ApiAccessPolicy(BasePermission):
     """Default permission of every API view.
 

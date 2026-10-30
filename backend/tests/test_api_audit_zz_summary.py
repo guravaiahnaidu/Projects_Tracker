@@ -50,7 +50,7 @@ class GlobalAudit(AuditCase):
         self.manager_auth = f"Bearer {AccessToken.for_user(manager)}"
 
     def concrete(self, tmpl):
-        ids = {"<id>": None, "<member_id>": self.lead.id, "<objective_id>": 1}
+        ids = {"<id>": None, "<member_id>": self.lead.id, "<objective_id>": 1, "<feedback_id>": 1}
         base = {"/projects/": self.proj.id, "/tasks/": self.tsk.id, "/members/": self.lead.id, "/daily-updates/": self.upd.id}
         pk = next((v for k, v in base.items() if tmpl.startswith(k)), 1)
         out = tmpl.replace("<id>", str(pk))
